@@ -7,6 +7,7 @@ import cartopy.feature as cfeature
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 from scipy.ndimage import gaussian_filter
+
 # Convert Green_component_scaled to a DataArray if it's not already
 Green_component_scaled = xr.DataArray(Green_component_scaled, coords=[lat, np.arange(Green_component_scaled.shape[1])], dims=["latitude", "longitude"])
 
