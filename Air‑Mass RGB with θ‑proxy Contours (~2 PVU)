@@ -8,6 +8,22 @@ import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 from scipy.ndimage import gaussian_filter
 
+# Load the temperature dataset (ERA5)
+file_path = 'C:\\Users\\moham\\OneDrive\\Documents\\stage\\8e510dccf46b7ff16b18c6aa68be9da0.nc'
+
+t_ds = xr.open_dataset(file_path)  # Adjust with your correct path
+
+# Inspect temperature data
+print(t_ds)
+
+# Load the potential vorticity dataset
+file_path1 = 'C:\\Users\\moham\\OneDrive\\Documents\\stage\\363cd0f107bb164d13a851710644a260.nc'
+
+pv_ds = xr.open_dataset(file_path1) # Adjust with your correct path
+
+# Inspect PV data
+print(pv_ds)
+
 # Convert Green_component_scaled to a DataArray if it's not already
 Green_component_scaled = xr.DataArray(Green_component_scaled, coords=[lat, np.arange(Green_component_scaled.shape[1])], dims=["latitude", "longitude"])
 
