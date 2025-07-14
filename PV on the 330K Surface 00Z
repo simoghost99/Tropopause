@@ -1,0 +1,111 @@
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from datetime import datetime
+
+# ------------------------------------------------------------------
+# 1. FILE PATH
+# ------------------------------------------------------------------
+file_path = r"C:\Users\moham\OneDrive\Documents\stage\98a4d3ee3b3b8aa12699f1286ad0843f.nc"
+
+# ------------------------------------------------------------------
+# 2. LOAD DATA
+# ------------------------------------------------------------------
+ds  = xr.open_dataset(file_path)
+t   = ds['t'].isel(valid_time=0).values
+u   = ds['u'].isel(valid_time=0).values
+v   = ds['v'].isel(valid_time=0).values
+lat = ds['latitude'].values
+lon = ds['longitude'].values
+plev= ds['pressure_level'].values * 100  # hPa → Pa
+
+# ------------------------------------------------------------------
+# 3. CONSTANTS
+# ------------------------------------------------------------------
+a     = 6.371e6
+g     = 9.80665
+Rd    = 287.05
+cp    = 1004.5
+kappa = Rd / cp
+omega = 7.292e-5
+pi    = np.pi
+
+# 2D grids
+lon2d, lat2d = np.meshgrid(lon, lat)
+phi = np.deg2rad(lat2d)
+f   = 2 * omega * np.sin(phi)
+
+# Metric terms
+dx = a * np.cos(phi) * np.deg2rad(np.gradient(lon))[np.newaxis, :]
+dy = a * np.deg2rad(np.gradient(lat))[:, np.newaxis]
+dx3 = np.broadcast_to(dx, t.shape)
+dy3 = np.broadcast_to(dy, t.shape)
+f3  = np.broadcast_to(f , t.shape)
+
+# ------------------------------------------------------------------
+# 4. THETA & PV
+# ------------------------------------------------------------------
+theta = t * (1e5 / plev[:, None, None]) ** kappa
+dθ_dp = np.gradient(theta, plev, axis=0)
+dθ_dx = np.gradient(theta, axis=2) / dx3
+dθ_dy = np.gradient(theta, axis=1) / dy3
+du_dp = np.gradient(u, plev, axis=0)
+dv_dp = np.gradient(v, plev, axis=0)
+dv_dx = np.gradient(v, axis=2) / dx3
+ducos_dy = np.gradient(u * np.cos(phi), axis=1) / dy3
+zeta = dv_dx - (1 / np.cos(phi)) * ducos_dy
+
+PV = -g * ((zeta + f3) * dθ_dp + dθ_dx * dv_dp - dθ_dy * du_dp)
+PVU = PV / 1e-6  # [PVU] = 1e-6 K·m²·kg⁻¹·s⁻¹
+
+# ------------------------------------------------------------------
+# 5. INTERPOLATE PV TO 330 K ISENTROPIC SURFACE
+# ------------------------------------------------------------------
+theta_target = 330
+pv330 = np.full((len(lat), len(lon)), np.nan)
+
+for j in range(len(lat)):
+    for i in range(len(lon)):
+        for k in range(len(plev) - 1):
+            th1 = theta[k  , j, i]
+            th2 = theta[k+1, j, i]
+            if th1 <= theta_target <= th2 or th2 <= theta_target <= th1:
+                pvu1 = PVU[k  , j, i]
+                pvu2 = PVU[k+1, j, i]
+                # linear interp
+                w = (theta_target - th1) / (th2 - th1)
+                pv330[j, i] = (1 - w) * pvu1 + w * pvu2
+                break
+
+# Optional smoothing
+pv330 = gaussian_filter(pv330, sigma=1)
+
+# ------------------------------------------------------------------
+# 6. PLOT
+# ------------------------------------------------------------------
+# Mask southern latitudes
+lat_mask = lat >= 0
+pv330_nh = pv330[lat_mask, :]
+lat_nh = lat[lat_mask]
+
+fig = plt.figure(figsize=(10, 5))
+ax = plt.axes(projection=ccrs.PlateCarree())
+ax.set_extent([-180, 180, 0, 90], crs=ccrs.PlateCarree())  # NH view
+clevs = np.linspace(-10, 10, 21)
+
+cf = ax.contourf(lon, lat_nh, pv330_nh, levels=clevs, cmap='RdBu_r', extend='both')
+cs = ax.contour(lon, lat_nh, pv330_nh, levels=clevs, colors='k', linewidths=0.5)
+cbar = plt.colorbar(cf, orientation='horizontal', pad=0.07)
+cbar.set_label("PVU")
+
+ax.coastlines('50m')
+ax.add_feature(cfeature.BORDERS, linewidth=0.3)
+ax.gridlines(draw_labels=True)
+
+fdate = datetime.strptime("20100101", '%Y%m%d').strftime('%d %b %Y')
+plt.title(f"NH: PV on the 330K Surface\n00Z {fdate}")
+plt.tight_layout()
+plt.show()
