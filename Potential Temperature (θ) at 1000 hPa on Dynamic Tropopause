@@ -1,0 +1,116 @@
+import xarray as xr
+import matplotlib.colors as mcolors
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
+from scipy.ndimage import gaussian_filter
+
+# Open the ERA5 dataset
+filee = r"C:\Users\moham\OneDrive\Documents\stage\83736aecc279782d2585f13b939e6e1e.nc"
+ds = xr.open_dataset(filee)
+
+# Extract variables from the dataset
+t = ds["t"].isel(valid_time=0)  # Temperature
+u = ds["u"].isel(valid_time=0)  # U-wind
+v = ds["v"].isel(valid_time=0)  # V-wind
+pressure = ds["pressure_level"] * 100  # Convert pressure to Pa
+lat = ds["latitude"].values
+lon = ds["longitude"].values
+
+# Constants
+Rd = 287.05  # gas constant for dry air
+cp = 1004.5  # specific heat at constant pressure
+kappa = Rd / cp
+omega = 7.292e-5  # Earth's rotation rate
+
+# Compute potential vorticity (PV)
+def compute_pvu(t, u, v, pressure, lat, lon):
+    lon2d, lat2d = np.meshgrid(lon, lat)
+    phi = np.deg2rad(lat2d)
+
+    # Compute derivatives
+    dx = np.gradient(lon)[np.newaxis, :]
+    dy = np.gradient(lat)[:, np.newaxis]
+    
+    f = 2 * omega * np.sin(phi)  # Coriolis parameter
+
+    # Calculate potential temperature
+    theta = t * (1e5 / pressure) ** kappa
+
+    # Compute derivatives
+    dθ_dp = np.gradient(theta, pressure, axis=0)
+    dθ_dx = np.gradient(theta, axis=2) / dx
+    dθ_dy = np.gradient(theta, axis=1) / dy
+    du_dp = np.gradient(u, pressure, axis=0)
+    dv_dp = np.gradient(v, pressure, axis=0)
+    dv_dx = np.gradient(v, axis=2) / dx
+    ducos_dy = np.gradient(u * np.cos(phi), axis=1) / dy
+
+    # Absolute vorticity and PV calculation
+    zeta = dv_dx - (1 / np.cos(phi)) * ducos_dy
+    PV = -9.81 * ((zeta + f) * dθ_dp + dθ_dx * dv_dp - dθ_dy * du_dp)
+    PVU = PV / 1e-6  # Convert to PV units (PVU)
+
+    return PVU
+
+# Compute PVU
+PVU = compute_pvu(t, u, v, pressure, lat, lon)
+
+# Calculate 2-PVU tropopause
+plev = pressure.values / 100  # Convert pressure to hPa
+tropopause = np.full((len(lat), len(lon)), np.nan)
+
+# Loop through the pressure levels to find the tropopause
+for k in range(len(plev)):
+    if 50 <= plev[k] <= 750:  # Tropopause between 50 and 750 hPa
+        mask = (PVU[k, :, :] >= 2.0) & np.isnan(tropopause)
+        for j in range(len(lat)):
+            if lat[j] < 0:
+                mask[j, :] = False
+        tropopause[mask] = plev[k]
+
+# Plot results
+fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=ccrs.PlateCarree()))
+tropo_masked = np.ma.masked_invalid(tropopause)
+
+# Plot the tropopause pressure
+clevs = np.arange(50, 800, 50)
+cp = ax.contourf(lon, lat, tropo_masked, levels=clevs, cmap='RdPu', extend='both', transform=ccrs.PlateCarree())
+ax.contour(lon, lat, tropo_masked, levels=clevs, colors='black', linewidths=0.5, transform=ccrs.PlateCarree())
+
+# Add land feature and colorbar
+ax.coastlines('50m', linewidth=0.8, color='gray')
+cbar = plt.colorbar(cp, orientation='horizontal', pad=0.05)
+cbar.set_label('Dynamic Tropopause Pressure (hPa)')
+
+# Map settings
+ax.set_extent([-180, 180, 0, 90], crs=ccrs.PlateCarree())
+ax.set_title("Dynamic Tropopause (2PVU) Pressure")
+ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.5)
+plt.tight_layout()
+plt.show()
+
+# Select temperature at a specific pressure level (e.g., 1000 hPa)
+theta_1000hPa = t.sel(pressure_level=1000).values  # Extract temperature at 1000 hPa
+theta_1000hPa_masked = np.ma.masked_invalid(theta_1000hPa)
+
+# Plot potential temperature (θ) at 1000 hPa
+fig, ax = plt.subplots(figsize=(12, 6), subplot_kw=dict(projection=ccrs.PlateCarree()))
+clevs_theta = np.arange(260, 400, 10)
+cp = ax.contourf(lon, lat, theta_1000hPa_masked, levels=clevs_theta, cmap='RdBu_r', transform=ccrs.PlateCarree())
+ax.contour(lon, lat, theta_1000hPa_masked, levels=clevs_theta, colors='black', linewidths=0.5, transform=ccrs.PlateCarree())
+
+# Add land feature and colorbar
+ax.coastlines('50m', linewidth=0.8, color='gray')
+cbar = plt.colorbar(cp, orientation='horizontal', pad=0.05)
+cbar.set_label('Potential Temperature (K)')
+
+# Map settings
+ax.set_extent([-180, 180, 0, 90], crs=ccrs.PlateCarree())
+ax.set_title("Potential Temperature (θ) at 1000 hPa on Dynamic Tropopause")
+ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.5)
+plt.tight_layout()
+plt.show()
