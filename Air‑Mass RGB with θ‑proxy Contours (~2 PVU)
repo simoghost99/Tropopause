@@ -1,0 +1,105 @@
+import xarray as xr
+import matplotlib.colors as mcolors
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
+from scipy.ndimage import gaussian_filter
+# Convert Green_component_scaled to a DataArray if it's not already
+Green_component_scaled = xr.DataArray(Green_component_scaled, coords=[lat, np.arange(Green_component_scaled.shape[1])], dims=["latitude", "longitude"])
+
+# Compute the zonal mean (average over longitude) for the Green component
+Green_component_zonal_mean = Green_component_scaled.mean(dim='longitude')  # shape: (latitude,)
+
+# Find latitudes where the Green component is below the threshold (approximates tropopause)
+green_threshold = np.percentile(Green_component_zonal_mean, 20)  # 20th percentile as an example
+tropopause_latitudes = lat[Green_component_zonal_mean < green_threshold]
+# Loop through latitudes where Green component is below the threshold
+for i in range(len(tropopause_latitudes)):
+    # Find the corresponding pressure level based on the Green component threshold
+    if Green_component_zonal_mean[i] < green_threshold:  # use zonal mean instead
+        p_tropo_estimated[i] = plevs[i]  # Get the pressure level where Green component is below the threshold
+# --- Inputs from your dataset -------------------------------------
+T_6_2 = t_ds['t'].sel(pressure_level=200.0).values
+T_7_3 = t_ds['t'].sel(pressure_level=300.0).values
+T_9_6 = t_ds['t'].sel(pressure_level=100.0).values
+T_10_8 = t_ds['t'].sel(pressure_level=300.0).values
+
+# --- RGB channels --------------------------------------------------
+red   = T_6_2 - T_7_3
+green = T_9_6 - T_10_8
+blue  = -T_6_2
+
+def norm(x):
+    return (x - x.min()) / (x.max() - x.min())
+
+r = norm(red  [0])
+g = norm(green[0])
+b = norm(blue [0])
+rgb_img = np.stack((r, g, b), axis=-1)
+
+# --- PVU proxy from potential temperature --------------------------
+kappa = 0.286
+theta_200 = T_6_2 * (1000 / 200)**kappa
+theta_300 = T_7_3 * (1000 / 300)**kappa
+theta_diff = theta_200 - theta_300
+
+# Normalize to range -2 to +2
+theta_proxy = 2 * theta_diff / np.max(np.abs(theta_diff))
+pv_proxy_0 = theta_proxy[0]
+
+# DEBUG: print actual min/max
+print("θ-proxy range:", pv_proxy_0.min(), pv_proxy_0.max())
+
+# --- Map -----------------------------------------------------------
+fig = plt.figure(figsize=(12, 10))
+ax = plt.axes(projection=ccrs.PlateCarree())
+ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())
+
+# Show RGB image
+img = ax.imshow(rgb_img, extent=[-180, 180, -90, 90],
+                transform=ccrs.PlateCarree(), origin='upper')
+
+# Coastlines
+ax.add_feature(cfeature.COASTLINE, lw=0.5)
+
+# Contour PVU proxy
+levels = np.linspace(-2, 2, 9)  # includes ±2
+CS = ax.contour(pv_proxy_0, levels=levels,
+                colors='black', linewidths=1.5,
+                transform=ccrs.PlateCarree(), extent=[-180, 180, -90, 90])
+
+# Add contour labels (inline text)
+ax.clabel(CS, fmt="%.1f", fontsize=9, inline=True)
+
+
+# Optional: Add labels
+# ax.clabel(CS, fmt="%.1f", fontsize=8)
+
+# Legend
+patch = mpatches.Patch(color='black', label='θ‑proxy contours (±2 PVU)')
+ax.legend(handles=[patch], loc='lower left')
+
+# Hide axes, borders
+ax.set_xticks([])
+ax.set_yticks([])
+ax.grid(False)
+for spine in ax.spines.values():
+    spine.set_visible(False)
+
+# Colorbar (invisible image for scaling)
+# Display the RGB image with transformation to match the projection
+im = ax.imshow(RGB_image, transform=ccrs.PlateCarree(), origin='upper', extent=[-180, 180, -90, 90])
+
+# Add a colorbar for the RGB image and adjust its position
+cbar = plt.colorbar(im, ax=ax, orientation='vertical', shrink=0.7)
+cbar.set_label('Temperature Difference (K)', fontsize=12)
+
+# Title
+ax.set_title("Air‑Mass RGB with θ‑proxy Contours (~2 PVU)", fontsize=15)
+
+plt.subplots_adjust(right=0.85)
+plt.show()
+
