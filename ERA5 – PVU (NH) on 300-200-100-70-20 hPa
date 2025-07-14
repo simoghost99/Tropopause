@@ -7,17 +7,18 @@ import cartopy.feature as cfeature
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 from scipy.ndimage import gaussian_filter
+
 # ------------------------------------------------------------------
-# 0.  chemins vers tes deux fichiers
+# 0.  Road to the 2 files
 # ------------------------------------------------------------------
 file_hi = r"C:\Users\moham\OneDrive\Documents\stage\8e510dccf46b7ff16b18c6aa68be9da0.nc"  # ≥100 hPa
 file_lo = r"C:\Users\moham\OneDrive\Documents\stage\7ef424ff81c28f4788f69ce963fa44fc.nc"  # <100 hPa
 
 # ------------------------------------------------------------------
-# 1.  fonction générique de calcul de la PVU sur un dataset ERA5
+# 1.  function to calculate the PVU in a dataset ERA5
 # ------------------------------------------------------------------
 def compute_pvu(ds):
-    """Retourne un DataArray PVU (pressure_level, latitude, longitude)."""
+    """Return  DataArray PVU (pressure_level, latitude, longitude)."""
     t  = ds['t'].isel(valid_time=0)
     u  = ds['u'].isel(valid_time=0)
     v  = ds['v'].isel(valid_time=0)
@@ -56,7 +57,7 @@ def compute_pvu(ds):
     return PVU
 
 # ------------------------------------------------------------------
-# 2.  calcul PVU sur chaque fichier puis concaténation
+# 2.  calculate PVU on every file then concatenation
 # ------------------------------------------------------------------
 pvu_hi = compute_pvu(xr.open_dataset(file_hi))
 pvu_lo = compute_pvu(xr.open_dataset(file_lo))
@@ -68,7 +69,7 @@ lon = PVU['longitude'].values
 plev = PVU['pressure_level'].values  # hPa
 
 # ------------------------------------------------------------------
-# 3.  cartes PVU aux niveaux demandés (NH seulement)
+# 3.   PVU map on different levels (NH only)
 # ------------------------------------------------------------------
 levels_to_plot = [300, 200, 100, 70, 50, 20]          # hPa
 vmin, vmax = 0, 10
@@ -91,7 +92,7 @@ for i, p in enumerate(levels_to_plot):
     ax.set_yticks(np.arange(0, 91, 15), crs=ccrs.PlateCarree())
     ax.tick_params(labelsize=8)
 
-# barre de couleurs commune
+# shared color bar
 cbar = fig.colorbar(cf, ax=axs, orientation='horizontal', pad=0.07, shrink=0.85)
 cbar.set_label('PVU')
 
