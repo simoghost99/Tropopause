@@ -1,0 +1,99 @@
+import xarray as xr
+import matplotlib.colors as mcolors
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
+from scipy.ndimage import gaussian_filter
+# ------------------------------------------------------------------
+# 0.  chemins vers tes deux fichiers
+# ------------------------------------------------------------------
+file_hi = r"C:\Users\moham\OneDrive\Documents\stage\8e510dccf46b7ff16b18c6aa68be9da0.nc"  # ≥100 hPa
+file_lo = r"C:\Users\moham\OneDrive\Documents\stage\7ef424ff81c28f4788f69ce963fa44fc.nc"  # <100 hPa
+
+# ------------------------------------------------------------------
+# 1.  fonction générique de calcul de la PVU sur un dataset ERA5
+# ------------------------------------------------------------------
+def compute_pvu(ds):
+    """Retourne un DataArray PVU (pressure_level, latitude, longitude)."""
+    t  = ds['t'].isel(valid_time=0)
+    u  = ds['u'].isel(valid_time=0)
+    v  = ds['v'].isel(valid_time=0)
+    lev = ds['pressure_level'].values * 100.0           # Pa
+    lat = ds['latitude'].values
+    lon = ds['longitude'].values
+
+    # constantes
+    a = 6.371e6; g = 9.80665; Rd = 287.05; cp = 1004.5
+    omega = 7.292e-5; kappa = Rd/cp
+
+    lon2d, lat2d = np.meshgrid(lon, lat)
+    phi = np.deg2rad(lat2d)
+    dlon = np.deg2rad(np.gradient(lon))[np.newaxis, :]
+    dlat = np.deg2rad(np.gradient(lat))[:, np.newaxis]
+    dx   = a * np.cos(phi) * dlon
+    dy   = a * dlat
+    f    = 2 * omega * np.sin(phi)
+
+    dx3 = np.broadcast_to(dx, t.shape)
+    dy3 = np.broadcast_to(dy, t.shape)
+    f3  = np.broadcast_to(f , t.shape)
+
+    theta = t * (1e5 / lev[:, None, None]) ** kappa
+    dθ_dp = np.gradient(theta, lev, axis=0)
+    dθ_dx = np.gradient(theta, axis=2) / dx3
+    dθ_dy = np.gradient(theta, axis=1) / dy3
+    du_dp = np.gradient(u, lev, axis=0)
+    dv_dp = np.gradient(v, lev, axis=0)
+    dv_dx = np.gradient(v, axis=2) / dx3
+    ducos_dy = np.gradient(u * np.cos(phi), axis=1) / dy3
+    zeta = dv_dx - (1 / np.cos(phi)) * ducos_dy
+
+    PV = -g * ((zeta + f3) * dθ_dp + dθ_dx * dv_dp - dθ_dy * du_dp)
+    PVU = xr.DataArray(PV / 1e-6, coords=t.coords, dims=t.dims)  # en PVU
+    return PVU
+
+# ------------------------------------------------------------------
+# 2.  calcul PVU sur chaque fichier puis concaténation
+# ------------------------------------------------------------------
+pvu_hi = compute_pvu(xr.open_dataset(file_hi))
+pvu_lo = compute_pvu(xr.open_dataset(file_lo))
+
+PVU = xr.concat([pvu_hi, pvu_lo], dim='pressure_level').sortby('pressure_level', ascending=False)
+
+lat = PVU['latitude'].values
+lon = PVU['longitude'].values
+plev = PVU['pressure_level'].values  # hPa
+
+# ------------------------------------------------------------------
+# 3.  cartes PVU aux niveaux demandés (NH seulement)
+# ------------------------------------------------------------------
+levels_to_plot = [300, 200, 100, 70, 50, 20]          # hPa
+vmin, vmax = 0, 10
+clevs = np.linspace(vmin, vmax, 21)
+
+fig, axs = plt.subplots(2, 3, figsize=(16, 8),
+                        subplot_kw={'projection': ccrs.PlateCarree()},
+                        constrained_layout=True)
+axs = axs.ravel()
+
+for i, p in enumerate(levels_to_plot):
+    idx = int(np.where(plev == p)[0][0])
+    data = PVU.isel(pressure_level=idx).where(PVU.latitude >= 0)  # NH
+    ax = axs[i]
+    ax.set_extent([0-180, 180, 0, 90], crs=ccrs.PlateCarree())
+    cf = ax.contourf(lon, lat, data, levels=clevs, cmap='RdPu', extend='both', transform=ccrs.PlateCarree())
+    ax.coastlines(resolution='50m', linewidth=0.5)
+    ax.set_title(f'PVU {p} hPa')
+    ax.set_xticks(np.arange(-180, 180, 60), crs=ccrs.PlateCarree())
+    ax.set_yticks(np.arange(0, 91, 15), crs=ccrs.PlateCarree())
+    ax.tick_params(labelsize=8)
+
+# barre de couleurs commune
+cbar = fig.colorbar(cf, ax=axs, orientation='horizontal', pad=0.07, shrink=0.85)
+cbar.set_label('PVU')
+
+plt.suptitle('ERA5 – PVU (NH) aux niveaux 300/200/100/70/50/20 hPa – 1 jan 2010 00 UTC', fontsize=14)
+plt.show()
