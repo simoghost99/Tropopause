@@ -1,0 +1,105 @@
+import xarray as xr
+import matplotlib.colors as mcolors
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
+from scipy.ndimage import gaussian_filter
+
+
+# Convert Green_component_scaled to a DataArray if it's not already
+Green_component_scaled = xr.DataArray(Green_component_scaled, coords=[lat, np.arange(Green_component_scaled.shape[1])], dims=["latitude", "longitude"])
+
+# Compute the zonal mean (average over longitude) for the Green component
+Green_component_zonal_mean = Green_component_scaled.mean(dim='longitude')  # shape: (latitude,)
+
+# Find latitudes where the Green component is below the threshold (approximates tropopause)
+green_threshold = np.percentile(Green_component_zonal_mean, 20)  # 20th percentile as an example
+tropopause_latitudes = lat[Green_component_zonal_mean < green_threshold]
+
+# Loop through latitudes where Green component is below the threshold
+for i in range(len(tropopause_latitudes)):
+    # Find the corresponding pressure level based on the Green component threshold
+    if Green_component_zonal_mean[i] < green_threshold:  # use zonal mean instead
+        p_tropo_estimated[i] = plevs[i]  # Get the pressure level where Green component is below the threshold
+
+# Extract temperatures for the 6.2µm and 7.3µm channels (use correct pressure levels)
+T_6_2 = t_ds['t'].sel(pressure_level=200.0).values  # Temperature at 6.2µm (use correct pressure level)
+T_7_3 = t_ds['t'].sel(pressure_level=300.0).values  # Temperature at 7.3µm (use correct pressure level)
+
+# Calculate the red component (difference between 6.2µm and 7.3µm)
+Red_component = T_6_2 - T_7_3  # Invert the 6.2µm temperature for the blue component
+Blue_component = -T_6_2  # Negative of the 6.2µm temperature for blue
+
+# Extract temperatures for the 9.6µm and 10.8µm channels (use correct pressure levels)
+T_9_6 = t_ds['t'].sel(pressure_level=100.0).values  # Temperature at 9.6µm (ozone-sensitive)
+T_10_8 = t_ds['t'].sel(pressure_level=300.0).values  # Temperature at 10.8µm (window channel)
+
+# Calculate the green component (difference between 9.6µm and 10.8µm)
+Green_component = T_9_6 - T_10_8
+
+# Select the data for the first valid_time (as a single slice for visualization)
+Red_component_scaled = Red_component[0, :, :]
+Green_component_scaled = Green_component[0, :, :]
+Blue_component_scaled = Blue_component[0, :, :]
+
+# Normalize each component to be in the range [0, 1]
+Red_component_scaled = (Red_component_scaled - np.min(Red_component_scaled)) / (np.max(Red_component_scaled) - np.min(Red_component_scaled))
+Green_component_scaled = (Green_component_scaled - np.min(Green_component_scaled)) / (np.max(Green_component_scaled) - np.min(Green_component_scaled))
+Blue_component_scaled = (Blue_component_scaled - np.min(Blue_component_scaled)) / (np.max(Blue_component_scaled) - np.min(Blue_component_scaled))
+
+# Stack the RGB components into a single 3D array with shape (latitude, longitude, 3)
+RGB_image = np.stack((Red_component_scaled, Green_component_scaled, Blue_component_scaled), axis=-1)
+
+# Calculate the potential vorticity (PV) based on the temperature difference
+# For simplicity, we assume PV is proportional to the temperature difference (scaled to PVU)
+# We are using a basic temperature difference proxy for the PV calculation
+
+temperature_diff = T_6_2 - T_7_3  # Difference between the 200hPa and 300hPa temperatures
+PVU = temperature_diff / np.max(np.abs(temperature_diff)) * 2  # Normalize to 2 PVU range
+
+# Plot the final RGB image with Earth contours and PVU
+fig, ax = plt.subplots(figsize=(12, 10))
+
+# Set up a PlateCarree projection (global latitude-longitude grid)
+ax = plt.axes(projection=ccrs.PlateCarree())
+
+# Add coastlines without country boundaries
+ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+
+# Define the map extent (optional, but helps focus the region)
+ax.set_extent([-180, 180, -90, 90], crs=ccrs.PlateCarree())  # Limits for global view
+
+# Display the RGB image with transformation to match the projection
+im = ax.imshow(RGB_image, transform=ccrs.PlateCarree(), origin='upper', extent=[-180, 180, -90, 90])
+
+# Add a colorbar for the RGB image and adjust its position
+cbar = plt.colorbar(im, ax=ax, orientation='vertical', shrink=0.7)
+cbar.set_label('Temperature Difference (K)', fontsize=12)
+
+# Add PVU contours on top of the RGB image
+# Contour the PVU data with a specific range to highlight 2 PVU
+CS = ax.contour(PVU[0, :, :], levels=np.linspace(-2, 2, 5), transform=ccrs.PlateCarree(), colors='black', linewidths=2)
+
+# Remove contour labels (numbers) from the map
+ax.clabel(CS, inline=True, fontsize=10, inline_spacing=5, fmt="%2.1f", use_clabeltext=False)
+
+# Create a custom legend for the contour lines inside the plot (without covering the map)
+contour_patch = mpatches.Patch(color='black', label='2 PVU Contours')
+plt.legend(handles=[contour_patch], loc='lower left', fontsize=12)
+
+# Adjust layout to center the plot and colorbar, ensuring the legend fits within the plot
+plt.subplots_adjust(right=1.5)  # Move the colorbar to the right
+
+
+
+
+# Set title and labels
+ax.set_title('Air Mass RGB Composite with 2 PVU Contours', fontsize=16)
+ax.set_xlabel('Longitude')
+ax.set_ylabel('Latitude')
+
+# Show the plot
+plt.show()
