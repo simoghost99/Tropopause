@@ -1,0 +1,112 @@
+import xarray as xr
+import matplotlib.colors as mcolors
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.patches as mpatches
+import matplotlib.ticker as mticker
+from scipy.ndimage import gaussian_filter
+# ------------------------------------------------------------
+# 1. Load ERA5 dataset
+# ------------------------------------------------------------
+filee = r"C:\Users\moham\OneDrive\Documents\stage\83736aecc279782d2585f13b939e6e1e.nc"
+ds = xr.open_dataset(filee)
+
+# -- Use valid_time if available --
+time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+t = ds["t"].isel({time_dim: 0})
+u = ds["u"].isel({time_dim: 0})
+v = ds["v"].isel({time_dim: 0})
+
+pressure = ds["pressure_level"] * 100.0  # hPa → Pa
+lat = ds["latitude"].values
+lon = ds["longitude"].values
+
+# ------------------------------------------------------------
+# 2. PVU calculation
+# ------------------------------------------------------------
+def compute_pvu(t, u, v, pressure, lat, lon):
+    a = 6.371e6
+    g = 9.80665
+    Rd = 287.05
+    cp = 1004.5
+    omega = 7.292e-5
+    kappa = Rd / cp
+
+    lon2d, lat2d = np.meshgrid(lon, lat)
+    phi = np.deg2rad(lat2d)
+
+    dlon = np.deg2rad(np.gradient(lon))[np.newaxis, :]
+    dlat = np.deg2rad(np.gradient(lat))[:, np.newaxis]
+
+    dx = a * np.cos(phi) * dlon
+    dy = a * dlat
+    f = 2 * omega * np.sin(phi)
+
+    dx3 = np.broadcast_to(dx, t.shape)
+    dy3 = np.broadcast_to(dy, t.shape)
+    f3  = np.broadcast_to(f,  t.shape)
+
+    theta = t * (1e5 / pressure) ** kappa
+    p_vals = pressure.values
+    dθ_dp  = np.gradient(theta, p_vals, axis=0)
+    dθ_dx  = np.gradient(theta, axis=2) / dx3
+    dθ_dy  = np.gradient(theta, axis=1) / dy3
+
+    du_dp = np.gradient(u, p_vals, axis=0)
+    dv_dp = np.gradient(v, p_vals, axis=0)
+    dv_dx = np.gradient(v, axis=2) / dx3
+    ducos_dy = np.gradient(u * np.cos(phi), axis=1) / dy3
+
+    zeta = dv_dx - (1 / np.cos(phi)) * ducos_dy
+    PV = -g * ((zeta + f3) * dθ_dp + dθ_dx * dv_dp - dθ_dy * du_dp)
+    PVU = xr.DataArray(PV / 1e-6, coords=t.coords, dims=t.dims)
+    return PVU
+
+PVU = compute_pvu(t, u, v, pressure, lat, lon)
+
+# ------------------------------------------------------------
+# 3. Compute 2-PVU tropopause (NH only, 50–750 hPa)
+# ------------------------------------------------------------
+plev = pressure.values / 100  # hPa
+tropopause = np.full((len(lat), len(lon)), np.nan)
+
+# Loop from top (low pressure) to bottom
+for k in range(len(plev)):
+    p = plev[k]
+    if p < 50 or p > 750:
+        continue
+    layer = PVU[k, :, :].values
+    mask = (layer >= 2.0) & np.isnan(tropopause)
+    for j in range(len(lat)):
+        if lat[j] < 0:
+            mask[j, :] = False
+    tropopause[mask] = p
+
+# ------------------------------------------------------------
+# 4. Plot tropopause pressure (NH only, land only)
+# ------------------------------------------------------------
+fig, ax = plt.subplots(figsize=(12, 6),
+                       subplot_kw=dict(projection=ccrs.PlateCarree()))
+
+tropo_masked = np.ma.masked_invalid(tropopause)
+cf = ax.contourf(lon, lat, tropo_masked,
+                 levels=np.arange(50, 775, 25),
+                 cmap='RdPu', extend='both',
+                 transform=ccrs.PlateCarree())
+
+# Add land outlines only (no country borders)
+ax.add_feature(cfeature.LAND, facecolor='none', edgecolor='black', linewidth=0.6)
+
+# Colorbar
+cbar = plt.colorbar(cf, orientation='horizontal', pad=0.05)
+cbar.set_label("Dynamical Tropopause Pressure (hPa)")
+
+# Map settings
+ax.set_extent([-180, 180, 0, 90], crs=ccrs.PlateCarree())
+ax.set_title("ERA5 • 2-PVU Dynamical Tropopause (50–750 hPa)\n1 Jan 2010 00 UTC")
+ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.5)
+ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+plt.tight_layout()
+plt.show()
