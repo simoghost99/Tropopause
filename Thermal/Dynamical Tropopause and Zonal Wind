@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 file_path = r"C:\Users\moham\OneDrive\Documents\stage\98a4d3ee3b3b8aa12699f1286ad0843f.nc"
 ds = xr.open_dataset(file_path)
 
+
 t = ds['t'].isel(valid_time=0).values
 z = ds['z'].isel(valid_time=0).values
 pv = ds['pv'].isel(valid_time=0).values
@@ -21,14 +22,36 @@ g = 9.80665
 z_height = z / g
 pv = pv / 1e-6  # Convert to PVU
 
+def calculate_average_lapse(t, z_height, plev, k_start, j, depth_m):
+    """Calculate average lapse rate over specified depth above starting level"""
+    target_z = z_height[k_start, j, :].mean() + (depth_m / 1000)  # Convert to km
+    total_lapse = 0
+    count = 0
+    
+    k = k_start
+    while k < len(plev) - 1 and z_height[k, j, :].mean() < target_z:
+        T1 = t[k, j, :].mean()
+        T2 = t[k + 1, j, :].mean()
+        Z1 = z_height[k, j, :].mean()
+        Z2 = z_height[k + 1, j, :].mean()
+        
+        if Z2 != Z1:
+            lapse_rate = - (T2 - T1) / (Z2 - Z1) * 1000
+            total_lapse += lapse_rate
+            count += 1
+        k += 1
+    
+    return total_lapse / count if count > 0 else np.inf
+
 # ---------------------------------------------------
-# 2. Thermal Tropopause (WMO)
+# 2. Thermal Tropopause (WMO) - Fixed version
 # ---------------------------------------------------
 thermal_tp = []
 
 for j in range(len(lat)):
     found = False
-    for k in range(len(plev) - 1):
+    # Start from the second level (skip surface)
+    for k in range(1, len(plev) - 1):
         T1 = t[k, j, :].mean()
         T2 = t[k + 1, j, :].mean()
         Z1 = z_height[k, j, :].mean()
@@ -38,45 +61,18 @@ for j in range(len(lat)):
         dZ = Z2 - Z1
 
         if dZ != 0:
-            lapse_rate = -dT / dZ * 1000
-            if lapse_rate <= 2:
-                thermal_tp.append((lat[j], plev[k]))
-                found = True
-                break
+            lapse_rate = -dT / dZ * 1000  # K/km
+            if lapse_rate <= 2.0:  # Using 2 K/km as initial threshold
+                # Additional check: must be above 500 hPa
+                if plev[k] < 500:
+                    # Now check the average lapse rate over 2 km above this level
+                    avg_lapse = calculate_average_lapse(t, z_height, plev, k, j, 2000)
+                    if avg_lapse <= 2.0:
+                        thermal_tp.append((lat[j], plev[k]))
+                        found = True
+                        break
     if not found:
         thermal_tp.append((lat[j], np.nan))
-
-# ---------------------------------------------------
-# 3. Dynamical Tropopause: PVU = 3 in NH, -3 in SH
-# ---------------------------------------------------
-dyn_tp = []
-
-plev_descending = plev[0] > plev[-1]
-if plev_descending:
-    nh_order = range(len(plev)-1, -1, -1)
-    sh_order = range(len(plev))
-else:
-    nh_order = range(len(plev))
-    sh_order = range(len(plev)-1, -1, -1)
-
-for j, LAT in enumerate(lat):
-    found = False
-    if LAT >= 0:
-        for idx in nh_order:
-            pvu = np.nanmax(pv[idx, j, :])
-            if pvu <= 4.0:
-                dyn_tp.append((LAT, plev[idx]))
-                found = True
-                break
-    else:
-        for idx in sh_order:
-            pvu = np.nanmean(pv[idx, j, :])
-            if pvu <= -3.5:
-                dyn_tp.append((LAT, plev[idx]))
-                found = True
-                break
-    if not found:
-        dyn_tp.append((LAT, np.nan))
 
 # ---------------------------------------------------
 # 4. Zonal Wind Mean
