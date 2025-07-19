@@ -9,6 +9,7 @@ file_path = r"C:\Users\moham\OneDrive\Documents\stage\98a4d3ee3b3b8aa12699f1286a
 ds = xr.open_dataset(file_path)
 
 
+
 t = ds['t'].isel(valid_time=0).values
 z = ds['z'].isel(valid_time=0).values
 pv = ds['pv'].isel(valid_time=0).values
@@ -78,6 +79,62 @@ for j in range(len(lat)):
 # 4. Zonal Wind Mean
 # ---------------------------------------------------
 u_mean = u.mean(axis=2)
+# ---------------------------------------------------
+# 3. Dynamical Tropopause (NH: first PV < 3 on way down;
+#                          SH: first PV < -3 on way up)
+# ---------------------------------------------------
+dyn_tp = []
+
+plev_descending = plev[0] > plev[-1]
+
+if plev_descending:
+    nh_order = range(len(plev)-1, -1, -1)  # top → bottom
+    sh_order = range(len(plev))           # bottom → top
+else:
+    nh_order = range(len(plev))           # top → bottom
+    sh_order = range(len(plev)-1, -1, -1)  # bottom → top
+
+for j, LAT in enumerate(lat):
+    found = False
+
+    if LAT >= 0:  # Northern Hemisphere
+        for idx in nh_order:
+            pv_slice = pv[idx, j, :]
+            if np.all(np.isnan(pv_slice)):
+                continue
+            if np.nanmax(pv_slice) < 3.0:
+                cross_idx = idx-1 if idx > 0 else idx
+                dyn_tp.append((LAT, plev[cross_idx]))
+                found = True
+                break
+
+    else:  # Southern Hemisphere
+        for idx in sh_order:
+            pv_slice = pv[idx, j, :]
+            if np.all(np.isnan(pv_slice)):
+                continue
+            if np.nanmean(pv_slice) <= -3.0:
+                dyn_tp.append((LAT, plev[idx]))
+                found = True
+                break
+
+    if not found:
+        dyn_tp.append((LAT, np.nan))
+
+# ---------------------------------------------------
+# 4. Extract PVU values at tropopause locations
+# ---------------------------------------------------
+dyn_pvu_values = []
+
+for lat_val, p_val in dyn_tp:
+    if np.isnan(p_val):
+        dyn_pvu_values.append(np.nan)
+        continue
+    j = np.argmin(np.abs(lat - lat_val))
+    k = np.argmin(np.abs(plev - p_val))
+    pvu_val = np.nanmax(pv[k, j, :])
+    dyn_pvu_values.append(pvu_val)
+
 
 # ---------------------------------------------------
 # 5. Plot
