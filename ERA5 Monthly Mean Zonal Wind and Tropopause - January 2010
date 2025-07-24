@@ -50,32 +50,40 @@ def detect_tropopauses(t, z, pv, plev, lat):
             thermal_tp.append((lat[j], np.nan))
             
         # Dynamical tropopause (PV-based)
-        dyn_found = False
-        if lat[j] > 20:  # NH
-            for k in range(len(plev)):
-                if pv[k,j] <= 2.0 and 100 <= plev[k] <= 400:
-                    dyn_tp.append((lat[j], plev[k]))
-                    dyn_found = True
+        plev_descending = plev[0] > plev[-1]
+        LAT = lat[j]
+        found = False
+
+        if LAT >= 0:  # Northern Hemisphere
+            # Search from top to bottom for NH
+            search_order = range(len(plev)-1, -1, -1) if plev_descending else range(len(plev))
+            for idx in search_order:
+                pv_val = pv[idx, j]
+                if np.isnan(pv_val):
+                    continue
+                if pv_val <= 2.0:  # Using 2 PVU for monthly mean
+                    dyn_tp.append((LAT, plev[idx]))
+                    found = True
                     break
-        elif lat[j] < -20:  # SH
-            for k in reversed(range(len(plev))):
-                if pv[k,j] >= -2.0 and 100 <= plev[k] <= 400:
-                    dyn_tp.append((lat[j], plev[k]))
-                    dyn_found = True
+        else:  # Southern Hemisphere
+            # Search from bottom to top for SH
+            search_order = range(len(plev)) if plev_descending else range(len(plev)-1, -1, -1)
+            for idx in search_order:
+                pv_val = pv[idx, j]
+                if np.isnan(pv_val):
+                    continue
+                if pv_val <= -2.0:  # Using -2 PVU for monthly mean
+                    dyn_tp.append((LAT, plev[idx]))
+                    found = True
                     break
-        else:  # Tropics
-            for k in range(len(plev)):
-                if 50 <= plev[k] <= 150 and abs(pv[k,j]) <= 1.5:
-                    dyn_tp.append((lat[j], plev[k]))
-                    dyn_found = True
-                    break
-        if not dyn_found:
-            dyn_tp.append((lat[j], np.nan))
-    
+
+        if not found:
+            dyn_tp.append((LAT, np.nan))
+
     return thermal_tp, dyn_tp
 
 # ---------------------------------------------------
-# 3. Plotting (Matches Reference Exactly)
+# 3. Plotting (Matches Single-Timestep Style)
 # ---------------------------------------------------
 def plot_results(lat, plev, u_zonal, thermal_tp, dyn_tp):
     fig, ax = plt.subplots(figsize=(12, 7))
@@ -90,15 +98,15 @@ def plot_results(lat, plev, u_zonal, thermal_tp, dyn_tp):
     thermal_lat, thermal_p = zip(*thermal_tp)
     dyn_lat, dyn_p = zip(*dyn_tp)
     
-    # Modified thermal tropopause plotting - individual red circles
-    ax.plot(thermal_lat, thermal_p, 'ro', markersize=3, 
-           label='Thermal tropopause (∂T/∂z > -2 K/km)', linestyle='none')
+    # Thermal tropopause as individual red circles (no connecting line)
+    ax.plot(thermal_lat, thermal_p, 'ro', markersize=2, 
+           label='Thermal tropopause (∂T/∂z > -2 K/km)')
     
     # Dynamical tropopause as solid green line
     ax.plot(dyn_lat, dyn_p, 'g-', linewidth=2.5, 
            label='Dynamical tropopause (2 PVU)')
     
-    # Formatting
+    # Formatting to match reference image exactly
     ax.set_yscale('log')
     ax.invert_yaxis()
     ax.set_ylim(1000, 10)
@@ -107,7 +115,12 @@ def plot_results(lat, plev, u_zonal, thermal_tp, dyn_tp):
     ax.set_ylabel("Pressure (hPa)", fontsize=12)
     ax.set_xlabel("Latitude (°)", fontsize=12)
     ax.set_title("ERA5 Monthly Mean Zonal Wind and Tropopause - January 2010", pad=20)
-    ax.legend(loc='upper right')
+    
+    # Legend in upper right with white background
+    legend = ax.legend(loc='upper right')
+    legend.get_frame().set_facecolor('white')
+    
+    # Add grid lines
     ax.grid(True, linestyle='--', alpha=0.3)
     
     plt.tight_layout()
@@ -131,7 +144,7 @@ try:
     lat = monthly_zonal.latitude.values
     t = monthly_zonal['t'].values
     z = monthly_zonal['z'].values / 9.80665  # Convert to height (m)
-    pv = monthly_zonal['pv'].values
+    pv = monthly_zonal['pv'].values / 1e-6  # Convert to PVU
     u_zonal = monthly_zonal['u'].values
     
     print("Step 3/3: Detecting tropopauses...")
