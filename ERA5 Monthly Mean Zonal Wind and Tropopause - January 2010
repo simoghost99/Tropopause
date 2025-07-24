@@ -1,0 +1,148 @@
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ---------------------------------------------------
+# 1. Memory-Safe ERA5 Processing (with longitude)
+# ---------------------------------------------------
+def process_era5_data(file_path):
+    """Process ERA5 data with proper longitude handling"""
+    # Open dataset with chunking
+    ds = xr.open_dataset(file_path, chunks={'valid_time': 1})
+    
+    # Filter January data
+    jan_data = ds.sel(valid_time=ds['valid_time'].dt.month == 1)
+    
+    # Compute zonal means (longitude average)
+    print("Computing zonal means (averaging over longitude)...")
+    zonal_mean = jan_data.mean(dim='longitude')
+    
+    # Compute monthly mean
+    print("Computing monthly mean...")
+    monthly_zonal = zonal_mean.mean(dim='valid_time')
+    
+    return monthly_zonal
+
+# ---------------------------------------------------
+# 2. Robust Tropopause Detection
+# ---------------------------------------------------
+def detect_tropopauses(t, z, pv, plev, lat):
+    """Improved detection with better edge handling"""
+    thermal_tp, dyn_tp = [], []
+    
+    # Process every 2nd latitude to save memory
+    for j in range(0, len(lat), 2):
+        # Thermal tropopause (WMO criteria)
+        thermal_found = False
+        for k in range(len(plev)-1):
+            if 100 <= plev[k] <= 500:  # Realistic range
+                dz = z[k+1,j] - z[k,j]
+                if dz > 10:  # Minimum height difference
+                    lapse_rate = - (t[k+1,j] - t[k,j]) / dz * 1000
+                    if lapse_rate <= 2.0:
+                        thermal_tp.append((lat[j], plev[k]))
+                        thermal_found = True
+                        break
+        if not thermal_found:
+            thermal_tp.append((lat[j], np.nan))
+            
+        # Dynamical tropopause (PV-based)
+        dyn_found = False
+        if lat[j] > 20:  # NH
+            for k in range(len(plev)):
+                if pv[k,j] <= 2.0 and 100 <= plev[k] <= 400:
+                    dyn_tp.append((lat[j], plev[k]))
+                    dyn_found = True
+                    break
+        elif lat[j] < -20:  # SH
+            for k in reversed(range(len(plev))):
+                if pv[k,j] >= -2.0 and 100 <= plev[k] <= 400:
+                    dyn_tp.append((lat[j], plev[k]))
+                    dyn_found = True
+                    break
+        else:  # Tropics
+            for k in range(len(plev)):
+                if 50 <= plev[k] <= 150 and abs(pv[k,j]) <= 1.5:
+                    dyn_tp.append((lat[j], plev[k]))
+                    dyn_found = True
+                    break
+        if not dyn_found:
+            dyn_tp.append((lat[j], np.nan))
+    
+    return thermal_tp, dyn_tp
+
+# ---------------------------------------------------
+# 3. Plotting (Matches Reference Exactly)
+# ---------------------------------------------------
+def plot_results(lat, plev, u_zonal, thermal_tp, dyn_tp):
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    # Wind contours (5 m/s intervals)
+    levels = np.arange(-40, 45, 5)
+    cs = ax.contour(lat, plev, u_zonal, levels=levels,
+                   colors='black', linewidths=0.8)
+    ax.clabel(cs, fmt='%d', fontsize=8)
+    
+    # Plot tropopauses
+    thermal_lat, thermal_p = zip(*thermal_tp)
+    dyn_lat, dyn_p = zip(*dyn_tp)
+    
+    # Modified thermal tropopause plotting - individual red circles
+    ax.plot(thermal_lat, thermal_p, 'ro', markersize=3, 
+           label='Thermal tropopause (∂T/∂z > -2 K/km)', linestyle='none')
+    
+    # Dynamical tropopause as solid green line
+    ax.plot(dyn_lat, dyn_p, 'g-', linewidth=2.5, 
+           label='Dynamical tropopause (2 PVU)')
+    
+    # Formatting
+    ax.set_yscale('log')
+    ax.invert_yaxis()
+    ax.set_ylim(1000, 10)
+    ax.set_yticks([1000, 300, 100, 30, 10])
+    ax.set_yticklabels(['10$^3$', '300', '10$^2$', '30', '10$^1$'])
+    ax.set_ylabel("Pressure (hPa)", fontsize=12)
+    ax.set_xlabel("Latitude (°)", fontsize=12)
+    ax.set_title("ERA5 Monthly Mean Zonal Wind and Tropopause - January 2010", pad=20)
+    ax.legend(loc='upper right')
+    ax.grid(True, linestyle='--', alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+# ---------------------------------------------------
+# 4. Main Execution
+# ---------------------------------------------------
+file_path = r"C:\Users\moham\OneDrive\Documents\stage\85cf3301703f51dafbb750ae23c0b93e.nc"
+
+try:
+    print("Step 1/3: Loading and processing data...")
+    monthly_zonal = process_era5_data(file_path)
+    
+    print("Step 2/3: Selecting pressure levels...")
+    key_levels = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50, 30, 10]
+    monthly_zonal = monthly_zonal.sel(pressure_level=key_levels)
+    
+    print("Preparing variables...")
+    plev = monthly_zonal.pressure_level.values
+    lat = monthly_zonal.latitude.values
+    t = monthly_zonal['t'].values
+    z = monthly_zonal['z'].values / 9.80665  # Convert to height (m)
+    pv = monthly_zonal['pv'].values
+    u_zonal = monthly_zonal['u'].values
+    
+    print("Step 3/3: Detecting tropopauses...")
+    thermal_tp, dyn_tp = detect_tropopauses(t, z, pv, plev, lat)
+    
+    print("Generating plot...")
+    plot_results(lat, plev, u_zonal, thermal_tp, dyn_tp)
+
+except Exception as e:
+    print(f"Error: {str(e)}")
+    print("Solutions:")
+    print("1. Install dask for better chunking: pip install dask")
+    print("2. Reduce data volume by selecting fewer pressure levels")
+    print("3. Process fewer latitude points (increase step in detect_tropopauses)")
