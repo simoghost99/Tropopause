@@ -1,0 +1,132 @@
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import warnings
+from scipy.ndimage import median_filter
+
+warnings.filterwarnings('ignore')
+
+def detect_tropopauses(t, z, pv, plev, lat):
+    """Vectorized tropopause detection"""
+    dz = np.diff(z, axis=0)
+    dt = np.diff(t, axis=0)
+    lapse_rate = - (dt / dz) * 1000  # K/km
+    
+    thermal_p = []
+    for j in range(len(lat)):
+        idx = np.where((plev[:-1] >= 100) & (plev[:-1] <= 500) & 
+                      (dz[:,j] > 10) & (lapse_rate[:,j] <= 2.0))[0]
+        thermal_p.append(plev[idx[0]] if len(idx) > 0 else np.nan)
+    
+    dyn_p = []
+    for j in range(len(lat)):
+        threshold = 2.0 if lat[j] >= 0 else -2.0
+        pv_col = pv[:,j]
+        valid = (plev <= 500) & (plev >= 50)
+        if not np.any(valid):
+            dyn_p.append(np.nan)
+            continue
+            
+        crossings = np.where(np.diff((pv_col > threshold).astype(int)) != 0)[0]
+        if len(crossings) > 0:
+            p = plev[crossings[0] + 1] if lat[j] >= 0 else plev[crossings[-1] + 1]
+            dyn_p.append(p if 50 <= p <= 500 else np.nan)
+        else:
+            dyn_p.append(np.nan)
+    
+    return list(zip(lat, thermal_p)), list(zip(lat, dyn_p))
+
+def process_era5_data(file_path):
+    """Process data with proper dimension handling"""
+    ds = xr.open_dataset(file_path, chunks={'valid_time': 10})
+    jan_data = ds.sel(valid_time=ds['valid_time'].dt.month == 1)
+    
+    # For tropopause detection
+    zonal_mean = jan_data.mean(dim=['valid_time', 'longitude']).load()
+    t = zonal_mean['t'].values
+    z = zonal_mean['z'].values / 9.80665
+    pv = zonal_mean['pv'].values / 1e-6
+    plev = zonal_mean.pressure_level.values
+    lat = zonal_mean.latitude.values
+    
+    thermal_tp, dyn_tp = detect_tropopauses(t, z, pv, plev, lat)
+    
+    # Create smoothed dynamical tropopause DataArray
+    dyn_p = xr.DataArray(
+        median_filter([p for (_, p) in dyn_tp], size=5),
+        dims=['latitude'],
+        coords={'latitude': lat}
+    )
+    
+    # Return monthly mean with full spatial dimensions
+    return jan_data.mean(dim='valid_time'), thermal_tp, dyn_p
+
+def plot_pv_map(ds, thermal_tp, dyn_p, level=300):
+    """Create PV map with guaranteed proper dimensions"""
+    try:
+        # Select level and convert to PVU
+        level_data = ds.sel(pressure_level=level, method='nearest')
+        pv_data = level_data['pv'] / 1e-6  # Convert to PVU
+        
+        # Verify we have proper 2D data
+        if not all(dim in pv_data.dims for dim in ['latitude', 'longitude']):
+            raise ValueError("PV data is not 2-dimensional")
+        
+        # Create plot
+        fig = plt.figure(figsize=(12, 6))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        
+        # Plot PV contours using explicit numpy arrays
+        pv_values = pv_data.values
+        lon_values = pv_data.longitude.values
+        lat_values = pv_data.latitude.values
+        
+        levels = np.linspace(-4, 4, 17)
+        cs = ax.contourf(
+            lon_values, 
+            lat_values,
+            pv_values,
+            levels=levels, 
+            cmap='RdBu_r', 
+            extend='both',
+            transform=ccrs.PlateCarree()
+        )
+        plt.colorbar(cs, label='PV (PVU)')
+        
+        # Add tropopauses
+        thermal_lat = [lat for lat, _ in thermal_tp]
+        rep_lon = np.mean(lon_values) * np.ones_like(thermal_lat)
+        
+       
+        
+        # Add map features
+        ax.add_feature(cfeature.COASTLINE)
+        
+        ax.gridlines(draw_labels=True)
+        ax.legend(loc='lower left')
+        
+        plt.title(f'PV at {level} hPa with Tropopauses (January 2010)')
+        plt.tight_layout()
+        plt.show()
+        
+    except Exception as e:
+        print(f"Error plotting at {level} hPa: {str(e)}")
+        if 'level_data' in locals():
+            print("PV data dims:", level_data['pv'].dims)
+            print("PV data shape:", level_data['pv'].shape)
+            print("Longitude shape:", level_data.longitude.shape)
+            print("Latitude shape:", level_data.latitude.shape)
+
+# Main execution
+file_path = r"C:\Users\moham\OneDrive\Documents\stage\85cf3301703f51dafbb750ae23c0b93e.nc"
+try:
+    print("Processing data...")
+    monthly_data, thermal_tp, dyn_p = process_era5_data(file_path)
+    
+    print("Creating PV map...")
+    plot_pv_map(monthly_data, thermal_tp, dyn_p, level=300)
+    
+except Exception as e:
+    print(f"Error: {str(e)}")
