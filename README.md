@@ -13,8 +13,7 @@ This notebook analyzes atmospheric data. It calculates brightness temperature di
 - **matplotlib.ticker**: Formats tick marks on axes, such as latitudes, longitudes, or pressure levels.
 - **scipy.ndimage**: Uses gaussian_filter to smooth or blur noisy data.
 
-## File Notes
-The file used in this analysis allows you to change the pressure level at any level you want. In this case, the code is set to 300 hPa, but you can adjust this by modifying the relevant parameter to target a different pressure level if needed.
+.
 
 ## stage1 Notebook
 The stage1 Jupyter notebook contains the detailed code implementation for this analysis, including the steps for calculating brightness temperature differences, zonal means, and potential vorticity. It also includes notes on the challenges faced, failures, and mistakes during the process. This notebook serves as a useful reference for troubleshooting and further refinement of the analysis pipeline.
@@ -26,7 +25,6 @@ The geographic maps of PV can be accessed here: [PV Maps for January 2010](https
 
 **Results Confirmed:**
 - PV ≈ 0 at the equator (dynamic tropopause not detectable).
-- The gradient is more marked at 300 hPa than at 100 hPa.
 
 These results validate the initial observations. Feel free to adjust the pressure level in the code to verify further.
 
