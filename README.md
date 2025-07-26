@@ -13,7 +13,7 @@ This notebook analyzes atmospheric data using **ERA5 files**. It calculates brig
 - **matplotlib.ticker**: Formats tick marks on axes, such as latitudes, longitudes, or pressure levels.
 - **scipy.ndimage**: Uses gaussian_filter to smooth or blur noisy data.
 
-## stage1 Notebook
+## Internship Notebook
 The stage1 Jupyter notebook contains the detailed code implementation for this analysis, including the steps for calculating brightness temperature differences, zonal means, and potential vorticity. It also includes notes on the challenges faced, failures, and mistakes during the process. This notebook serves as a useful reference for troubleshooting and further refinement of the analysis pipeline.
 
 ## Link to Geographic Maps
