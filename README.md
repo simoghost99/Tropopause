@@ -14,7 +14,7 @@ This notebook analyzes atmospheric data using **ERA5 files**. It calculates brig
 - **scipy.ndimage**: Uses gaussian_filter to smooth or blur noisy data.
 
 ## Internship Notebook
-The stage1 Jupyter notebook contains the detailed code implementation for this analysis, including the steps for calculating brightness temperature differences, zonal means, and potential vorticity. It also includes notes on the challenges faced, failures, and mistakes during the process. This notebook serves as a useful reference for troubleshooting and further refinement of the analysis pipeline.
+The Jupyter notebook contains the detailed code implementation for this analysis, including the steps for calculating brightness temperature differences, zonal means, and potential vorticity. It also includes notes on the challenges faced, failures, and mistakes during the process. This notebook serves as a useful reference for troubleshooting and further refinement of the analysis pipeline.
 
 ## Link to Geographic Maps
 The geographic maps of PV can be accessed here: [PV Maps for January 2010](https://github.com/simoghost99/PV/blob/main/PV%20at%20%7Blevel%7D%20hPa%20with%20Tropopauses%20(January%202010))
