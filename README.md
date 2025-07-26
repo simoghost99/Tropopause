@@ -1,6 +1,6 @@
 # Potential Vorticity Analysis
 
-This notebook analyzes atmospheric data using **ERA5 files**. It calculates brightness temperature differences, zonal means, and potential vorticity to identify tropopause pressure levels. The analysis helps visualize temperature, ozone, and wind patterns across various pressure levels in the atmosphere. All plots represent data for January 1, 2010, at 00:00 UTC, but the time can be modified by using the appropriate ERA5 dataset file. Future enhancements will include plotting monthly mean data for better long-term trend analysis.
+This notebook analyzes atmospheric data using **ERA5 files**. It calculates brightness temperature differences, zonal means, and potential vorticity to identify tropopause pressure levels. The analysis helps visualize temperature, ozone, and wind patterns across various pressure levels in the atmosphere. All plots represent data for January 1, 2010, at 00:00 UTC, but the time can be modified by using the appropriate ERA5 dataset file. Additionally, the notebook performs a **monthly mean analysis** for January 2010 for better long-term trend insights.
 
 ## Libraries Used
 - **xarray**: For working with multidimensional arrays, especially atmospheric data like temperature, ozone, and winds.
@@ -25,6 +25,8 @@ The geographic maps of PV can be accessed here: [PV Maps for January 2010](https
 - PV ≈ 0 at the equator (dynamic tropopause not detectable).
 
 These results validate the initial observations. Feel free to adjust the pressure level in the code to verify further.
+
+Additionally, a **monthly mean** for January 2010 is calculated to provide insights into the long-term trends for the period.
 
 Best regards,  
 Mohammed El Abdioui
