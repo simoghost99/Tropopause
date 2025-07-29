@@ -1,0 +1,115 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import xarray as xr
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from tqdm import tqdm  # For progress bar
+
+def detect_tropopause(humidity, pressure):
+    """Optimized tropopause detection"""
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_q = np.log10(humidity + 1e-12)
+        grad = -np.diff(log_q) / np.diff(np.log10(pressure))
+        tropo_idx = np.argmax(grad > 0.02)
+        return pressure[tropo_idx] if 0 < tropo_idx < len(pressure) else np.nan
+
+def main():
+    try:
+        # Load ERA5 data with chunking for memory efficiency
+        ds = xr.open_dataset(r"C:\Users\moham\OneDrive\Documents\stage\98a4d3ee3b3b8aa12699f1286ad0843f.nc", 
+                           chunks={'latitude': 50, 'longitude': 50})
+        
+        # Select first time step if needed
+        if 'valid_time' in ds.dims:
+            ds = ds.isel(valid_time=0)
+        elif 'time' in ds.dims:
+            ds = ds.isel(time=0)
+            
+        # Downsample more aggressively for faster processing
+        ds = ds.isel(latitude=slice(None, None, 4), longitude=slice(None, None, 4))
+        
+        # Load required variables into memory
+        q = ds['q'].transpose('pressure_level', 'latitude', 'longitude').load()
+        pv = ds['pv'].transpose('pressure_level', 'latitude', 'longitude').load()
+        pres = ds['pressure_level'].values
+        
+        # Pre-calculate PV contours for faster plotting
+        print("Calculating PV contours...")
+        pv_levels = np.array([1.5, 2.0, 3.0])  # Focus on key PV levels
+        pv_contour_data = {}
+        
+        for pvu in tqdm(pv_levels, desc="Processing PV levels"):
+            pv_contour = np.full((len(q.latitude), len(q.longitude)), np.nan)
+            for lat in range(len(q.latitude)):
+                for lon in range(len(q.longitude)):
+                    try:
+                        pv_contour[lat, lon] = np.interp(pvu, pv[:, lat, lon].values, pres)
+                    except ValueError:
+                        continue
+            pv_contour_data[pvu] = pv_contour
+        
+        # Calculate tropopause pressure
+        print("Calculating tropopause...")
+        tropo_pres = np.full((len(q.latitude), len(q.longitude)), np.nan)
+        for lat in tqdm(range(len(q.latitude)), desc="Processing latitudes"):
+            for lon in range(len(q.longitude)):
+                tropo_pres[lat, lon] = detect_tropopause(q[:, lat, lon].values, pres)
+        
+        # Create plot
+        print("Generating plot...")
+        fig = plt.figure(figsize=(16, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        ax.set_global()
+        
+        # Simplified map features for faster rendering
+        ax.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.3)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.gridlines(draw_labels=True)
+        
+        # Plot tropopause pressure (50-500 hPa)
+        levels = np.linspace(50, 500, 15)
+        cf = ax.contourf(
+            q.longitude, 
+            q.latitude, 
+            tropo_pres,
+            levels=levels,
+            cmap='viridis',
+            extend='both',
+            transform=ccrs.PlateCarree()
+        )
+        
+        # Plot only key PV contours
+        colors = ['red', 'white', 'cyan']
+        for i, (pvu, contour) in enumerate(pv_contour_data.items()):
+            linewidth = 3 if pvu == 2.0 else 1.5  # Emphasize 2 PVU contour
+            cs = ax.contour(
+                q.longitude,
+                q.latitude,
+                contour,
+                levels=[pvu],
+                colors=colors[i],
+                linewidths=linewidth,
+                linestyles='-' if pvu == 2.0 else '--',
+                transform=ccrs.PlateCarree()
+            )
+            if pvu == 2.0:  # Only label 2 PVU contour
+                ax.clabel(cs, inline=True, fmt=f'{pvu} PVU', fontsize=10)
+        
+        # Add colorbar and title
+        cbar = plt.colorbar(cf, ax=ax, orientation='horizontal', pad=0.05, aspect=50)
+        cbar.set_label('Tropopause Pressure (hPa)')
+        plt.title('Global Tropopause Detection (50-500 hPa) - 1 january 2010 00:00 UTC', 
+                 pad=20, fontsize=12)
+        
+        plt.tight_layout()
+        plt.savefig('tropopause_fast.png', dpi=200, bbox_inches='tight')  # Lower DPI for smaller file
+        print("Plot saved as 'tropopause_fast.png'")
+        plt.show()
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        if 'ds' in locals():
+            print("Available dimensions:", list(ds.dims))
+
+if __name__ == "__main__":
+    main()
