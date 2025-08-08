@@ -1,0 +1,142 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+from netCDF4 import Dataset
+import os
+
+# ==============================================
+# 1. Load ERA5 Data (Unchanged)
+# ==============================================
+def load_era5_data(filepath):
+    """Load your specific ERA5 NetCDF file."""
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    nc = Dataset(filepath, 'r')
+    print("Available variables:", list(nc.variables.keys()))
+    
+    # Get variables
+    pressure_levels = nc.variables['pressure_level'][:].astype(float)
+    lat = nc.variables['latitude'][:]
+    lon = nc.variables['longitude'][:]
+    q = nc.variables['q'][0]  # Specific humidity
+    t = nc.variables['t'][0]  # Temperature
+    
+    # Ensure pressure levels are descending
+    if pressure_levels[0] < pressure_levels[-1]:
+        pressure_levels = pressure_levels[::-1]
+        q = q[::-1, :, :]
+        t = t[::-1, :, :]
+    
+    nc.close()
+    return {
+        'pressure_levels': pressure_levels,
+        'q': q,
+        't': t,
+        'lat': lat,
+        'lon': lon
+    }
+
+# ==============================================
+# 2. Calculation Functions
+# ==============================================
+def calculate_hygropause(q, pressure_levels):
+    """Original hygropause calculation (unchanged)."""
+    grad_q = np.abs(np.gradient(q, pressure_levels, axis=0))
+    return pressure_levels[np.argmin(grad_q, axis=0)]
+
+def calculate_tropopause(t, pressure_levels):
+    """Your specified tropopause calculation method."""
+    height = -7.0 * np.log(pressure_levels / 1000.0)  # Height in km
+    tropopause_pressure = np.full(t.shape[1:], np.nan)
+    
+    for i in range(t.shape[1]):
+        for j in range(t.shape[2]):
+            t_profile = t[:, i, j]
+            
+            # Calculate lapse rate (-dT/dz in °C/km)
+            lapse_rate = -np.gradient(t_profile, height) * 1000
+            for k in range(len(lapse_rate)):
+                if lapse_rate[k] <= 2.0:
+                    tropopause_pressure[i, j] = pressure_levels[k]
+                    break
+                    
+    return tropopause_pressure
+
+# ==============================================
+# 3. Data Processing
+# ==============================================
+def process_era5_data(data_dict):
+    """Processing pipeline with your specified methods."""
+    hygropause = calculate_hygropause(data_dict['q'], data_dict['pressure_levels'])
+    tropopause = calculate_tropopause(data_dict['t'], data_dict['pressure_levels'])
+    
+    # Apply consistent pressure bounds
+    hygropause = np.where((hygropause > 50) & (hygropause < 400), hygropause, np.nan)
+    tropopause = np.where((tropopause > 50) & (tropopause < 400), tropopause, np.nan)
+    
+    return {
+        'hygropause': hygropause,
+        'tropopause': tropopause,
+        'lat': data_dict['lat'],
+        'lon': data_dict['lon']
+    }
+
+# ==============================================
+# 4. Your Original Cartography Style
+# ==============================================
+def plot_global_map(data, lats, lons, title):
+    """Maintains your exact geographical plot style."""
+    fig = plt.figure(figsize=(16, 8))
+    ax = plt.axes(projection=ccrs.Robinson())
+    
+    mesh = ax.pcolormesh(lons, lats, data,
+                        transform=ccrs.PlateCarree(),
+                        cmap='viridis',
+                        vmin=50, vmax=300)
+    
+    ax.coastlines(linewidth=0.5)
+    ax.gridlines(draw_labels=True)
+    plt.colorbar(mesh, ax=ax, label='Pressure (hPa)', pad=0.02)
+    plt.title(title, pad=20)
+    plt.show()
+
+# ==============================================
+# 5. Main Execution
+# ==============================================
+if __name__ == "__main__":
+    era5_file = r"C:/Users/moham/OneDrive/Documents/stage/98a4d3ee3b3b8aa12699f1286ad0843f.nc"
+    
+    try:
+        print("Loading data...")
+        era5_data = load_era5_data(era5_file)
+        print(f"Pressure levels: {era5_data['pressure_levels']}")
+        
+        print("Processing data...")
+        results = process_era5_data(era5_data)
+        
+        print("Generating plots...")
+        plot_global_map(results['hygropause'], results['lat'], results['lon'],
+                       " Humidity based Tropopause (hygropause) ")
+        plot_global_map(results['tropopause'], results['lat'], results['lon'],
+                       " Stability based Tropopause ")
+        
+        # Detection statistics
+        print("\nDetection Statistics:")
+        print(f"Hygropause range: {np.nanmin(results['hygropause']):.1f}-{np.nanmax(results['hygropause']):.1f} hPa")
+        print(f"Tropopause range: {np.nanmin(results['tropopause']):.1f}-{np.nanmax(results['tropopause']):.1f} hPa")
+        
+        # Regional coverage
+        tropical = (np.abs(results['lat']) <= 15)
+        midlat = (np.abs(results['lat']) > 15)
+        
+        print("\nTropopause Coverage:")
+        print(f"Tropical (15°S-15°N): {np.mean(~np.isnan(results['tropopause'][tropical]))*100:.1f}%")
+        print(f"Mid-latitudes: {np.mean(~np.isnan(results['tropopause'][midlat]))*100:.1f}%")
+    
+    except Exception as e:
+        print(f"\nError: {str(e)}")
+        print("Check:")
+        print("1. File path and NetCDF format")
+        print("2. Variable names match those shown above")
+        print("3. Pressure levels cover 50-400 hPa range")
