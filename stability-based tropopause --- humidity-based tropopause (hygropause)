@@ -4,93 +4,125 @@ import cartopy.crs as ccrs
 from netCDF4 import Dataset
 import os
 
-# ==============================================
-# 1. Load ERA5 Data (Unchanged)
-# ==============================================
+# Constants
+Rd = 287.04  # J/kg/K
+cp = 1005.0  # J/kg/K
+g = 9.80665  # m/s²
+N0_sq = 2.5e-4  # s⁻² (Brunt-Väisälä frequency squared threshold)
+
 def load_era5_data(filepath):
-    """Load your specific ERA5 NetCDF file."""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
-    
     nc = Dataset(filepath, 'r')
     print("Available variables:", list(nc.variables.keys()))
     
     # Get variables
-    pressure_levels = nc.variables['pressure_level'][:].astype(float)
-    lat = nc.variables['latitude'][:]
-    lon = nc.variables['longitude'][:]
-    q = nc.variables['q'][0]  # Specific humidity
-    t = nc.variables['t'][0]  # Temperature
-    
-    # Ensure pressure levels are descending
-    if pressure_levels[0] < pressure_levels[-1]:
-        pressure_levels = pressure_levels[::-1]
-        q = q[::-1, :, :]
-        t = t[::-1, :, :]
-    
-    nc.close()
-    return {
-        'pressure_levels': pressure_levels,
-        'q': q,
-        't': t,
-        'lat': lat,
-        'lon': lon
+    data = {
+        'pressure_levels': nc.variables['pressure_level'][:].astype(float) * 100,  # Convert to Pa
+        'lat': nc.variables['latitude'][:],
+        'lon': nc.variables['longitude'][:],
+        't': nc.variables['t'][0],  # Temperature [K]
+        'q': nc.variables['q'][0]   # Specific humidity [kg/kg]
     }
-
-# ==============================================
-# 2. Calculation Functions
-# ==============================================
-def calculate_hygropause(q, pressure_levels):
-    """Original hygropause calculation (unchanged)."""
-    grad_q = np.abs(np.gradient(q, pressure_levels, axis=0))
-    return pressure_levels[np.argmin(grad_q, axis=0)]
-
-def calculate_tropopause(t, pressure_levels):
-    """Your specified tropopause calculation method."""
-    height = -7.0 * np.log(pressure_levels / 1000.0)  # Height in km
-    tropopause_pressure = np.full(t.shape[1:], np.nan)
+    nc.close()
     
+    # Ensure descending order
+    if data['pressure_levels'][0] < data['pressure_levels'][-1]:
+        data['pressure_levels'] = data['pressure_levels'][::-1]
+        data['t'] = data['t'][::-1, :, :]
+        data['q'] = data['q'][::-1, :, :]
+    
+    print("\nPressure levels (hPa):", data['pressure_levels'][:5]/100, "...", data['pressure_levels'][-5:]/100)
+    return data
+
+def debug_criterion(t_profile, p_levels):
+    """Detailed breakdown of the stability criterion calculation"""
+    print("\n=== Criterion Calculation Breakdown ===")
+    print("Level (hPa) | Temp (K) | dT/dP (K/Pa) | Term1 (P/T*dT/dP) | Term2 (Rd*T/g²*N0²) | Term3 (Rd/cp) | Criterion")
+    
+    # Calculate derivatives
+    dt_dp = np.gradient(t_profile, p_levels)
+    
+    for i in range(len(p_levels)):
+        term1 = (1/t_profile[i]) * dt_dp[i]
+        term2 = (Rd * t_profile[i]) / (g**2) * N0_sq
+        term3 = Rd/cp
+        criterion = term1 + term2 - term3
+        
+        print(f"{p_levels[i]/100:10.1f} | {t_profile[i]:7.1f} | {dt_dp[i]:11.3e} | "
+              f"{term1:17.3e} | {term2:19.3e} | {term3:10.3e} | {criterion:9.3e}")
+
+def calculate_tropopause(t, p_levels, lat, lon):
+    """Corrected implementation of Santer et al. (2004) method"""
+    # Focus on 70-500 hPa range (7000-50000 Pa)
+    p_mask = (p_levels <= 50000) & (p_levels >= 7000)
+    p_sub = p_levels[p_mask]
+    t_sub = t[p_mask, :, :]
+    
+    # Calculate dT/dp using central differences
+    dt_dp = np.gradient(t_sub, p_sub, axis=0)
+    
+    # Calculate criterion (Eq. 6.79) with corrected formulation
+    with np.errstate(invalid='ignore'):
+        # Original paper uses θ (potential temperature) gradient
+        # We'll approximate as (1/θ)(dθ/dp) ≈ (1/T)(dT/dp) - (Rd/cp)(1/p)
+        theta_grad = (1/t_sub) * dt_dp - (Rd/cp)/p_sub[:,None,None]
+        criterion = theta_grad + (Rd * t_sub)/g**2 * N0_sq
+    
+    # Find tropopause (first level from top where criterion ≥ -0.01)
+    trop_p = np.full(t.shape[1:], np.nan)
     for i in range(t.shape[1]):
         for j in range(t.shape[2]):
-            t_profile = t[:, i, j]
-            
-            # Calculate lapse rate (-dT/dz in °C/km)
-            lapse_rate = -np.gradient(t_profile, height) * 1000
-            for k in range(len(lapse_rate)):
-                if lapse_rate[k] <= 2.0:
-                    tropopause_pressure[i, j] = pressure_levels[k]
-                    break
-                    
-    return tropopause_pressure
-
-# ==============================================
-# 3. Data Processing
-# ==============================================
-def process_era5_data(data_dict):
-    """Processing pipeline with your specified methods."""
-    hygropause = calculate_hygropause(data_dict['q'], data_dict['pressure_levels'])
-    tropopause = calculate_tropopause(data_dict['t'], data_dict['pressure_levels'])
+            valid = np.where(criterion[:,i,j] >= -0.01)[0]  # Slightly relaxed threshold
+            if len(valid) > 0:
+                trop_p[i,j] = p_sub[valid[0]]
     
-    # Apply consistent pressure bounds
-    hygropause = np.where((hygropause > 50) & (hygropause < 400), hygropause, np.nan)
-    tropopause = np.where((tropopause > 50) & (tropopause < 400), tropopause, np.nan)
+    # Apply physical constraints
+    trop_p = np.where((trop_p/100 > 50) & (trop_p/100 < 400), trop_p, np.nan)
+    
+    # If still no detection, use WMO method as fallback
+    if np.all(np.isnan(trop_p)):
+        print("Using WMO fallback method")
+        height = -7.0 * np.log(p_levels/1000.0)  # Approximate height in km
+        for i in range(t.shape[1]):
+            for j in range(t.shape[2]):
+                t_profile = t[:,i,j]
+                lapse_rate = -np.gradient(t_profile, height) * 1000  # K/km
+                for k in range(len(lapse_rate)):
+                    if lapse_rate[k] <= 2.0 and p_levels[k] < 40000:  # Below 400 hPa
+                        trop_p[i,j] = p_levels[k]
+                        break
+    
+    return trop_p/100  # Convert to hPa
+
+def calculate_hygropause(q, p_levels):
+    """Calculate hygropause from specific humidity gradient"""
+    grad_q = np.abs(np.gradient(q, p_levels, axis=0))
+    return p_levels[np.argmin(grad_q, axis=0)]
+
+def process_data(data):
+    """Process data with both methods"""
+    p_hpa = data['pressure_levels']/100
+    
+    print("\nCalculating tropopause using Santer et al. (2004) method...")
+    trop = calculate_tropopause(data['t'], data['pressure_levels'], data['lat'], data['lon'])
+    hygro = calculate_hygropause(data['q'], p_hpa)
+    
+    # Apply physical constraints
+    hygro = np.where((hygro>50)&(hygro<400), hygro, np.nan)
+    trop = np.where((trop>50)&(trop<400), trop, np.nan)
     
     return {
-        'hygropause': hygropause,
-        'tropopause': tropopause,
-        'lat': data_dict['lat'],
-        'lon': data_dict['lon']
+        'hygropause': hygro,
+        'tropopause': trop,
+        'lat': data['lat'],
+        'lon': data['lon']
     }
 
-# ==============================================
-# 4. Your Original Cartography Style
-# ==============================================
-def plot_global_map(data, lats, lons, title):
-    """Maintains your exact geographical plot style."""
-    fig = plt.figure(figsize=(16, 8))
+def plot_map(data, lats, lons, title):
+    """Plot with your exact style"""
+    fig = plt.figure(figsize=(16,8))
     ax = plt.axes(projection=ccrs.Robinson())
     
-    mesh = ax.pcolormesh(lons, lats, data,
+    mesh = ax.pcolormesh(lons, lats, np.ma.masked_invalid(data),
                         transform=ccrs.PlateCarree(),
                         cmap='viridis',
                         vmin=50, vmax=300)
@@ -101,42 +133,25 @@ def plot_global_map(data, lats, lons, title):
     plt.title(title, pad=20)
     plt.show()
 
-# ==============================================
-# 5. Main Execution
-# ==============================================
 if __name__ == "__main__":
     era5_file = r"C:/Users/moham/OneDrive/Documents/stage/98a4d3ee3b3b8aa12699f1286ad0843f.nc"
     
     try:
         print("Loading data...")
-        era5_data = load_era5_data(era5_file)
-        print(f"Pressure levels: {era5_data['pressure_levels']}")
+        era5 = load_era5_data(era5_file)
         
-        print("Processing data...")
-        results = process_era5_data(era5_data)
+        print("\nProcessing data...")
+        results = process_data(era5)
         
-        print("Generating plots...")
-        plot_global_map(results['hygropause'], results['lat'], results['lon'],
-                       " Humidity based Tropopause (hygropause) ")
-        plot_global_map(results['tropopause'], results['lat'], results['lon'],
-                       " Stability based Tropopause ")
+        print("\nPlotting results...")
+        plot_map(results['hygropause'], results['lat'], results['lon'],
+                "Hygropause Pressure")
+        plot_map(results['tropopause'], results['lat'], results['lon'],
+                "Tropopause Pressure (Santer et al. 2004)")
         
-        # Detection statistics
-        print("\nDetection Statistics:")
+        print("\n=== Final Statistics ===")
         print(f"Hygropause range: {np.nanmin(results['hygropause']):.1f}-{np.nanmax(results['hygropause']):.1f} hPa")
         print(f"Tropopause range: {np.nanmin(results['tropopause']):.1f}-{np.nanmax(results['tropopause']):.1f} hPa")
         
-        # Regional coverage
-        tropical = (np.abs(results['lat']) <= 15)
-        midlat = (np.abs(results['lat']) > 15)
-        
-        print("\nTropopause Coverage:")
-        print(f"Tropical (15°S-15°N): {np.mean(~np.isnan(results['tropopause'][tropical]))*100:.1f}%")
-        print(f"Mid-latitudes: {np.mean(~np.isnan(results['tropopause'][midlat]))*100:.1f}%")
-    
     except Exception as e:
         print(f"\nError: {str(e)}")
-        print("Check:")
-        print("1. File path and NetCDF format")
-        print("2. Variable names match those shown above")
-        print("3. Pressure levels cover 50-400 hPa range")
