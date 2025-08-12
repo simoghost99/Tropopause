@@ -1,0 +1,261 @@
+import numpy as np
+import netCDF4 as S
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import mpl_toolkits.basemap as bm
+import math as M
+
+
+pref = 100000.0
+p0 = pref
+g = 9.81
+Rd = 287.0
+cp = 1005.0
+kappa = Rd / cp
+radius_earth = 6370000.0
+pi = M.pi
+omega_earth = 0.00007292
+
+direcInput = "C:/Users/moham/OneDrive/Documents/stage"
+direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
+
+
+
+year = 2010
+month = "Jan"
+
+if month=="Jan": nt0=0
+if month=="Feb": nt0=124
+if month=="Mar": nt0=236
+if month=="Apr": nt0=360
+if month=="May": nt0=480
+if month=="Jun": nt0=604
+if month=="Jul": nt0=724
+if month=="Aug": nt0=848
+if month=="Sep": nt0=972
+if month=="Oct": nt0=1092
+if month=="Nov": nt0=1216
+if month=="Dec": nt0=1336
+
+a = S.Dataset(direcInput+"/ERA-I_pv_t_u_[p]_"+month+str(year)+"_4xd_2deg_global.nc", mode='r') #ERA-Int data of v along a zonal strip between fixed latitudes
+#b = S.Dataset(direcInput+"ERA-I_z_v_omega_[p]_"+month+str(year)+"_4xd_2deg_global.nc", mode='r') #ERA-Int data of v along a zonal strip between fixed latitudes
+
+
+lat = a.variables["latitude"][:] 
+lon = a.variables["longitude"][:] 
+p = 100 * a.variables["level"][:]    #pressure in pa
+time = a.variables["time"][:] 
+
+
+nx_len = len(lon)
+ny_len = len(lat)
+nt_len = len(time)
+nlev_len = len(p)
+
+deltay = lat[1] - lat[0]   # degrees
+dphi = deltay * pi / 180   # radians
+dy = dphi * radius_earth   # metres
+
+fcor = np.zeros((ny_len), dtype='d')     
+for ny in range(ny_len):
+  fcor[ny] = 2 * omega_earth * M.sin(lat[ny] * pi / 180.)
+
+u = a.variables["u"][:,:,:,:]   #time, level, lat, lon
+temp = a.variables["t"][:,:,:,:]   #time, level, lat, lon
+pv = 1000000 * a.variables["pv"][:,:,:,:]   #time, level, lat, lon
+
+u[:,:,0,:] = 0
+u[:,:,ny_len-1,:] = 0
+
+u_zm = np.mean(u, axis = 3)
+temp_zm = np.mean(temp, axis = 3)
+pv_zm = np.mean(pv, axis = 3)
+
+u_zm[:,:,0]=0 
+u_zm[:,:,ny_len-1]=0 
+temp_zm[:,:,0]=temp_zm[:,:,1]
+temp_zm[:,:,ny_len-1]=temp_zm[:,:,ny_len-2] 
+
+
+u_zm_tm = np.mean(u_zm, axis = 0)
+temp_zm_tm = np.mean(temp_zm, axis = 0)
+pv_zm_tm = np.mean(pv_zm, axis = 0)
+
+
+u_zm_tm[:,0]=0 
+u_zm_tm[:,ny_len-1]=0 
+
+
+
+ # Calculate lapse rate
+
+LapseRate = np.zeros((nlev_len,ny_len), dtype='d')     
+ 
+for ny in range(ny_len):
+ for nlev in range(nlev_len-1):
+   temp1 = temp_zm_tm[nlev,ny]
+   temp2 = temp_zm_tm[nlev+1,ny]
+   ro_zm_tm1 = p[nlev] / (Rd * temp1)
+   ro_zm_tm2 = p[nlev+1] / (Rd * temp2)
+   ro_zm_tm = 0.5 * (ro_zm_tm1 + ro_zm_tm2)
+   dz = -(p[nlev] - p[nlev+1]) /  (g * ro_zm_tm)
+   dtemp = temp1 - temp2
+   LapseRate[nlev,ny] = 1000 * dtemp / dz     # K / km  
+ 
+  
+ 
+#  Find height of WMO-tropopause
+pTropopauseWMO = np.zeros((ny_len), dtype='d')    
+
+for ny in range(ny_len):
+ flag = 0
+ for nlev in range(nlev_len-2,0,-1):  # scan from high to low pressure, i.e. from ground upwards
+  if (LapseRate[nlev,ny] > -2) and (flag==0): 
+   pTropopauseWMO[ny] = 0.5 * (p[nlev+1] + p[nlev])
+   if pTropopauseWMO[ny] < 50000: flag=1
+   #print ny, pTropopauseWMO[ny]
+   
+# Calculate stability tropopause (using ktroptype=1)
+pTropopauseStab = np.zeros((ny_len), dtype='d')
+for ny in range(ny_len):
+    kltrop = troplev(nlev_len, 1, temp_zm_tm[:,ny], np.zeros(nlev_len), p)
+    if kltrop < nlev_len-1:
+        pTropopauseStab[ny] = 0.5 * (p[kltrop] + p[kltrop+1])
+    else:
+        pTropopauseStab[ny] = p[-1]
+# Guaranteed Hygropause Calculation
+pHygropause = np.zeros((ny_len), dtype='d')
+
+for ny in range(ny_len):
+    # Use temperature minimum as proxy for hygropause (common alternative)
+    # Find the level with minimum temperature in 150-400 hPa range
+    min_temp_level = np.argmin(temp_zm_tm[:,ny][(p >= 15000) & (p <= 40000)])
+    p_levels = p[(p >= 15000) & (p <= 40000)]
+    pHygropause[ny] = p_levels[min_temp_level]
+    
+    # Alternative: Fixed pressure level demonstration (uncomment if needed)
+    # pHygropause[ny] = 25000  # 250 hPa for all latitudes
+
+
+#@ Log p-axis
+
+paxis = np.zeros((nlev_len), dtype='d')   # axis for plotting (log of pc)
+for nlev in range(nlev_len): 
+ paxis[nlev] = M.log(p[nlev]/100,10)
+
+direcOutput = "C:/Users/moham/OneDrive/Documents/stage" # set directory containing plots of model results
+
+
+ ############## 
+ptop = 0.8
+#ptop = 1.4
+pbot = 3.0
+
+for nlev in range(nlev_len): 
+ for ny in range(ny_len):
+  if p[nlev] >50000: pv_zm_tm[nlev,ny] = 0.0
+
+ #  PLOT [u], [Theta] and tropopause as a function of logp
+plt.figure(figsize=(12,7))
+
+plt.axis([lat[ny_len-1],lat[0]+0.1, pbot,ptop])
+
+legend_elements = [
+    Line2D([0], [0], marker='o', color='w', label='WMO Tropopause',
+           markerfacecolor='red', markersize=8),
+    Line2D([0], [0], color='green', lw=4, label='Dynamical Tropopause (PV=2)'),
+    Line2D([0], [0], marker='s', color='blue', lw=0, label='Stability Tropopause',
+           markersize=8, markeredgewidth=2),
+    Line2D([0], [0], marker='D', color='purple', lw=0, label='Hygropause',
+           markersize=8, markeredgewidth=2)
+]
+# Add the legend in upper right
+plt.legend(handles=legend_elements, loc='upper right', fontsize=10, 
+           framealpha=0.8, facecolor='white')
+
+CS = plt.contour( lat,paxis,u_zm_tm, linewidths=1 ,levels=[5,10,15,25,30,35,45,50,55,65,70,75], linestyles='solid', colors='black')
+CS = plt.contour( lat,paxis,u_zm_tm, linewidths=4 ,levels=[20,40,60,80], linestyles='solid', colors='black')
+plt.clabel(CS, fontsize=12, inline=1,fmt = '%1.0f' )
+
+CS = plt.contour( lat,paxis,u_zm_tm, linewidths=1 ,levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], linestyles='dashed', colors='black')
+CS = plt.contour( lat,paxis,u_zm_tm, linewidths=2 ,levels=[-60,-40,-20], linestyles='dashed', colors='black')
+plt.clabel(CS, fontsize=12, inline=1,fmt = '%1.0f' )
+
+
+
+CS = plt.contour( lat,paxis, -273.16 + temp_zm_tm , linewidths=1 ,levels=[10,20,30,40], linestyles='solid', colors='red')
+ #plt.clabel(CS, fontsize=14, inline=1,fmt = '%1.0f' )
+CS = plt.contour( lat,paxis, -273.16 + temp_zm_tm , linewidths=3 ,levels=[0], linestyles='dashed', colors='c')
+plt.clabel(CS, fontsize=14, inline=1,fmt = '%1.0f' )
+CS = plt.contour( lat,paxis, -273.16 + temp_zm_tm  , linewidths=1 ,levels=[-70,-50,-40,-30,-20,-10], linestyles='solid', colors='blue')
+ #plt.clabel(CS, fontsize=14, inline=1,fmt = '%1.0f' )
+CS = plt.contour( lat,paxis, -273.16 + temp_zm_tm  , linewidths=3 ,levels=[-80,-60], linestyles='solid', colors='blue')
+plt.clabel(CS, fontsize=14, inline=1,fmt = '%1.0f' )
+
+Map = plt.contourf( lat,paxis,-273.16 + temp_zm_tm, levels=[-120,-80.1], colors='mediumorchid') 
+Map = plt.contourf( lat,paxis,-273.16 + temp_zm_tm, levels=[-79.9,-60], colors='lightskyblue') 
+Map = plt.contourf( lat,paxis,-273.16 + temp_zm_tm, levels=[10,60], colors='lightsalmon')  
+Map = plt.contourf( lat,paxis,-273.16 + temp_zm_tm, levels=[-60,0], colors='lightcyan') 
+
+# DRAW THE DYNAMICAL TROPOPAUSE
+CP = plt.contour(lat,paxis,pv_zm_tm,levels = [-2,+2],linestyles='solid', linewidths=7.0, colors=('green'))
+plt.clabel(CP, fontsize=12, inline=1,fmt = '%1.0f',colors=('green') )
+
+# SHOW THE WMO TROPOPAUSE ONLY IN THE TROPICS
+#CP = plt.contour(lat,paxis_LapseRate,np.transpose(LapseRate[:,:]), linewidths=6, levels = [-2],linestyles='solid',  colors=('darkgreen'))
+for ny in range(ny_len): 
+ if abs(lat[ny])<88.0: plt.plot( lat[ny], M.log(pTropopauseWMO[ny]/100,10), "o", markersize=6,color=('red'))
+
+# Plot stability tropopause as blue squares
+for ny in range(ny_len): 
+    if abs(lat[ny])<88.0: 
+        plt.plot(lat[ny], M.log(pTropopauseStab[ny]/100,10), "s", markersize=6, color='blue')
+
+# Plot hygropause as large purple diamonds
+for ny in range(ny_len): 
+    if abs(lat[ny]) < 88.0:
+        plt.plot(lat[ny], M.log(pHygropause[ny]/100,10), 
+                "D", markersize=6, 
+                color='purple')
+
+plt.xticks(np.arange(lat[ny_len-1],lat[0]+0.1,15), fontsize=15)
+plt.yticks(np.arange(pbot,ptop,-1), fontsize=15)
+print("Hygropause pressures (hPa):", pHygropause/100)
+print("Mean pressure:", np.nanmean(pHygropause)/100, "hPa")
+
+ax = plt.gca()
+ax.axes.yaxis.set_ticklabels([])
+
+
+plt.text(lat[ny_len-1]-14,3,"1000", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.02,"100", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.02,"10", fontsize=15)
+
+plt.text(lat[ny_len-1]-11,2.497,"300", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.497,"30", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.72,"500", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.72,"50", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.32,"200", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.32,"20", fontsize=15)
+
+plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
+          'Tropopauses: WMO (red), PV (green), Stability (blue), Hygropause (purple) '+month+" "+str(year), 
+          fontsize=10)
+
+#plt.text(20,1.72,"thermal tropopause (red dots) ", color='red', fontsize=10)
+#plt.text(20,1.62,"dynamical tropopause (green solid line) ", color='green', fontsize=10)
+
+
+plt.text(80,3.20,"ERA-Interim (2 deg)", fontsize=8)
+plt.text(80,3.25,"Plot-ERAI_[MM-u_T]logp.py", fontsize=8)
+
+plt.xlabel('latitude [degrees north]', fontsize=16) # label along x-axes
+plt.text(lat[ny_len-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center',fontsize=16)
+
+
+
+plt.savefig(direcOutput+"u_temp_zm_tm"+month+str(year)+".png") # save plot as png-file in directory, DYME
+
+plt.show() # show plot on screen
+plt.close()
+ 
