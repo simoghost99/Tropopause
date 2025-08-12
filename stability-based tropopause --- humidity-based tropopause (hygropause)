@@ -1,157 +1,272 @@
 import numpy as np
+import netCDF4 as S
 import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-from netCDF4 import Dataset
-import os
+from matplotlib.lines import Line2D
+import mpl_toolkits.basemap as bm
+import math as M
 
-# Constants
-Rd = 287.04  # J/kg/K
-cp = 1005.0  # J/kg/K
-g = 9.80665  # m/s²
-N0_sq = 2.5e-4  # s⁻² (Brunt-Väisälä frequency squared threshold)
+def troplev(kflev, ktroptype, pt, pq, pp):
+    """
+    Determine tropopause level based on temperature, humidity, and pressure.
+    Parameters:
+        kflev: Number of model levels
+        ktroptype: 1 = stability method, 2 = humidity method with 600 m check
+        pt: Temperature profile [K]
+        pq: Specific humidity profile [kg/kg]
+        pp: Pressure profile [Pa]
+    Returns:
+        kltrop: Tropopause model level index
+    """
+    # Constants
+    RD = 287.05     # J/(kg*K)
+    RG = 9.80665    # m/s^2
+    RKAPPA = 0.2854 # RD / CP for dry air
 
-def load_era5_data(filepath):
-    nc = Dataset(filepath, 'r')
-    print("Available variables:", list(nc.variables.keys()))
-    
-    # Get variables
-    data = {
-        'pressure_levels': nc.variables['pressure_level'][:].astype(float) * 100,  # Convert to Pa
-        'lat': nc.variables['latitude'][:],
-        'lon': nc.variables['longitude'][:],
-        't': nc.variables['t'][0],  # Temperature [K]
-        'q': nc.variables['q'][0]   # Specific humidity [kg/kg]
-    }
-    nc.close()
-    
-    # Ensure descending order
-    if data['pressure_levels'][0] < data['pressure_levels'][-1]:
-        data['pressure_levels'] = data['pressure_levels'][::-1]
-        data['t'] = data['t'][::-1, :, :]
-        data['q'] = data['q'][::-1, :, :]
-    
-    print("\nPressure levels (hPa):", data['pressure_levels'][:5]/100, "...", data['pressure_levels'][-5:]/100)
-    return data
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
 
-def debug_criterion(t_profile, p_levels):
-    """Detailed breakdown of the stability criterion calculation"""
-    print("\n=== Criterion Calculation Breakdown ===")
-    print("Level (hPa) | Temp (K) | dT/dP (K/Pa) | Term1 (P/T*dT/dP) | Term2 (Rd*T/g²*N0²) | Term3 (Rd/cp) | Criterion")
-    
-    # Calculate derivatives
-    dt_dp = np.gradient(t_profile, p_levels)
-    
-    for i in range(len(p_levels)):
-        term1 = (1/t_profile[i]) * dt_dp[i]
-        term2 = (Rd * t_profile[i]) / (g**2) * N0_sq
-        term3 = Rd/cp
-        criterion = term1 + term2 - term3
-        
-        print(f"{p_levels[i]/100:10.1f} | {t_profile[i]:7.1f} | {dt_dp[i]:11.3e} | "
-              f"{term1:17.3e} | {term2:19.3e} | {term3:10.3e} | {criterion:9.3e}")
+    for j in range(ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+            if ktroptype == 1:
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD * pt[j+1] * 2.5e-4 / (RG * RG)
+                if kltrop == ilevm2 and zstab > RKAPPA:
+                    kltrop = j
+            elif ktroptype == 2:
+                if kltrop == ilevm2 and pq[j] > 3.0e-6:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA - pp[j]**RKAPPA)
+                    zb = pt[j] - za * pp[j]**RKAPPA
+                    ztm = 0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA))**(1.0 / RKAPPA)
+                    zp600m = zpm + 600.0 * RG * zpm / (RD * ztm)
 
-def calculate_tropopause(t, p_levels, lat, lon):
-    """Corrected implementation of Santer et al. (2004) method"""
-    # Focus on 70-500 hPa range (7000-50000 Pa)
-    p_mask = (p_levels <= 50000) & (p_levels >= 7000)
-    p_sub = p_levels[p_mask]
-    t_sub = t[p_mask, :, :]
-    
-    # Calculate dT/dp using central differences
-    dt_dp = np.gradient(t_sub, p_sub, axis=0)
-    
-    # Calculate criterion (Eq. 6.79) with corrected formulation
-    with np.errstate(invalid='ignore'):
-        # Original paper uses θ (potential temperature) gradient
-        # We'll approximate as (1/θ)(dθ/dp) ≈ (1/T)(dT/dp) - (Rd/cp)(1/p)
-        theta_grad = (1/t_sub) * dt_dp - (Rd/cp)/p_sub[:,None,None]
-        criterion = theta_grad + (Rd * t_sub)/g**2 * N0_sq
-    
-    # Find tropopause (first level from top where criterion ≥ -0.01)
-    trop_p = np.full(t.shape[1:], np.nan)
-    for i in range(t.shape[1]):
-        for j in range(t.shape[2]):
-            valid = np.where(criterion[:,i,j] >= -0.01)[0]  # Slightly relaxed threshold
-            if len(valid) > 0:
-                trop_p[i,j] = p_sub[valid[0]]
-    
-    # Apply physical constraints
-    trop_p = np.where((trop_p/100 > 50) & (trop_p/100 < 400), trop_p, np.nan)
-    
-    # If still no detection, use WMO method as fallback
-    if np.all(np.isnan(trop_p)):
-        print("Using WMO fallback method")
-        height = -7.0 * np.log(p_levels/1000.0)  # Approximate height in km
-        for i in range(t.shape[1]):
-            for j in range(t.shape[2]):
-                t_profile = t[:,i,j]
-                lapse_rate = -np.gradient(t_profile, height) * 1000  # K/km
-                for k in range(len(lapse_rate)):
-                    if lapse_rate[k] <= 2.0 and p_levels[k] < 40000:  # Below 400 hPa
-                        trop_p[i,j] = p_levels[k]
-                        break
-    
-    return trop_p/100  # Convert to hPa
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA + pp[jj+1]**RKAPPA))**(1.0 / RKAPPA)
+                        jj += 1
+                    if pq[jj] > 5.0e-6:
+                        kltrop = j
+        elif pp[j] > 5.0e4 and kltrop == ilevm2:
+            kltrop = j - 1
+    return kltrop
 
-def calculate_hygropause(q, p_levels):
-    """Calculate hygropause from specific humidity gradient"""
-    grad_q = np.abs(np.gradient(q, p_levels, axis=0))
-    return p_levels[np.argmin(grad_q, axis=0)]
+# Constants and setup
+pref = 100000.0
+p0 = pref
+g = 9.81
+Rd = 287.0
+cp = 1005.0
+kappa = Rd / cp
+radius_earth = 6370000.0
+pi = M.pi
+omega_earth = 0.00007292
 
-def process_data(data):
-    """Process data with both methods"""
-    p_hpa = data['pressure_levels']/100
-    
-    print("\nCalculating tropopause using Santer et al. (2004) method...")
-    trop = calculate_tropopause(data['t'], data['pressure_levels'], data['lat'], data['lon'])
-    hygro = calculate_hygropause(data['q'], p_hpa)
-    
-    # Apply physical constraints
-    hygro = np.where((hygro>50)&(hygro<400), hygro, np.nan)
-    trop = np.where((trop>50)&(trop<400), trop, np.nan)
-    
-    return {
-        'hygropause': hygro,
-        'tropopause': trop,
-        'lat': data['lat'],
-        'lon': data['lon']
-    }
+direcInput = "C:/Users/moham/OneDrive/Documents/stage"
+direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
 
-def plot_map(data, lats, lons, title):
-    """Plot with your exact style"""
-    fig = plt.figure(figsize=(16,8))
-    ax = plt.axes(projection=ccrs.Robinson())
-    
-    mesh = ax.pcolormesh(lons, lats, np.ma.masked_invalid(data),
-                        transform=ccrs.PlateCarree(),
-                        cmap='viridis',
-                        vmin=50, vmax=300)
-    
-    ax.coastlines(linewidth=0.5)
-    ax.gridlines(draw_labels=True)
-    plt.colorbar(mesh, ax=ax, label='Pressure (hPa)', pad=0.02)
-    plt.title(title, pad=20)
-    plt.show()
+year = 2010
+month = "Jan"
 
-if __name__ == "__main__":
-    era5_file = r"C:/Users/moham/OneDrive/Documents/stage/98a4d3ee3b3b8aa12699f1286ad0843f.nc"
+if month=="Jan": nt0=0
+if month=="Feb": nt0=124
+if month=="Mar": nt0=236
+if month=="Apr": nt0=360
+if month=="May": nt0=480
+if month=="Jun": nt0=604
+if month=="Jul": nt0=724
+if month=="Aug": nt0=848
+if month=="Sep": nt0=972
+if month=="Oct": nt0=1092
+if month=="Nov": nt0=1216
+if month=="Dec": nt0=1336
+
+# Load data
+a = S.Dataset(direcInput+"/ERA-I_pv_t_u_[p]_"+month+str(year)+"_4xd_2deg_global.nc", mode='r')
+
+lat = a.variables["latitude"][:] 
+lon = a.variables["longitude"][:] 
+p = 100 * a.variables["level"][:]    #pressure in Pa
+time = a.variables["time"][:] 
+
+nx_len = len(lon)
+ny_len = len(lat)
+nt_len = len(time)
+nlev_len = len(p)
+
+deltay = lat[1] - lat[0]   # degrees
+dphi = deltay * pi / 180   # radians
+dy = dphi * radius_earth   # metres
+
+fcor = np.zeros((ny_len), dtype='d')     
+for ny in range(ny_len):
+    fcor[ny] = 2 * omega_earth * M.sin(lat[ny] * pi / 180.)
+
+u = a.variables["u"][:,:,:,:]   #time, level, lat, lon
+temp = a.variables["t"][:,:,:,:]   #time, level, lat, lon
+pv = 1000000 * a.variables["pv"][:,:,:,:]   #time, level, lat, lon
+
+# Handle boundary conditions
+u[:,:,0,:] = 0
+u[:,:,ny_len-1,:] = 0
+
+# Zonal means
+u_zm = np.mean(u, axis=3)
+temp_zm = np.mean(temp, axis=3)
+pv_zm = np.mean(pv, axis=3)
+
+u_zm[:,:,0]=0 
+u_zm[:,:,ny_len-1]=0 
+temp_zm[:,:,0]=temp_zm[:,:,1]
+temp_zm[:,:,ny_len-1]=temp_zm[:,:,ny_len-2] 
+
+# Time means
+u_zm_tm = np.mean(u_zm, axis=0)
+temp_zm_tm = np.mean(temp_zm, axis=0)
+pv_zm_tm = np.mean(pv_zm, axis=0)
+
+u_zm_tm[:,0]=0 
+u_zm_tm[:,ny_len-1]=0 
+
+# Calculate lapse rate
+LapseRate = np.zeros((nlev_len,ny_len), dtype='d')     
+for ny in range(ny_len):
+    for nlev in range(nlev_len-1):
+        temp1 = temp_zm_tm[nlev,ny]
+        temp2 = temp_zm_tm[nlev+1,ny]
+        ro_zm_tm1 = p[nlev] / (Rd * temp1)
+        ro_zm_tm2 = p[nlev+1] / (Rd * temp2)
+        ro_zm_tm = 0.5 * (ro_zm_tm1 + ro_zm_tm2)
+        dz = -(p[nlev] - p[nlev+1]) / (g * ro_zm_tm)
+        dtemp = temp1 - temp2
+        LapseRate[nlev,ny] = 1000 * dtemp / dz     # K / km
+
+# 1. Find height of WMO-tropopause (Lapse rate method)
+pTropopauseWMO = np.zeros((ny_len), dtype='d')    
+for ny in range(ny_len):
+    flag = 0
+    for nlev in range(nlev_len-2,0,-1):  # scan from high to low pressure
+        if (LapseRate[nlev,ny] > -2) and (flag==0): 
+            pTropopauseWMO[ny] = 0.5 * (p[nlev+1] + p[nlev])
+            if pTropopauseWMO[ny] < 50000: flag=1
+
+# 2. Dynamical tropopause (PV-based) is already in the PV contours
+
+# 3. Find height of Stability-based tropopause
+pTropopauseStab = np.zeros((ny_len), dtype='d')
+for ny in range(ny_len):
+    # Create temporary profiles for this latitude
+    pt_profile = temp_zm_tm[:,ny]  # Temperature profile
+    pp_profile = p[:]              # Pressure profile
+    pq_dummy = np.zeros_like(pt_profile)  # Dummy humidity profile
     
-    try:
-        print("Loading data...")
-        era5 = load_era5_data(era5_file)
-        
-        print("\nProcessing data...")
-        results = process_data(era5)
-        
-        print("\nPlotting results...")
-        plot_map(results['hygropause'], results['lat'], results['lon'],
-                "Hygropause Pressure")
-        plot_map(results['tropopause'], results['lat'], results['lon'],
-                "Tropopause Pressure (Santer et al. 2004)")
-        
-        print("\n=== Final Statistics ===")
-        print(f"Hygropause range: {np.nanmin(results['hygropause']):.1f}-{np.nanmax(results['hygropause']):.1f} hPa")
-        print(f"Tropopause range: {np.nanmin(results['tropopause']):.1f}-{np.nanmax(results['tropopause']):.1f} hPa")
-        
-    except Exception as e:
-        print(f"\nError: {str(e)}")
+    # Call the tropopause detection function (stability method only)
+    kltrop = troplev(nlev_len, 1, pt_profile, pq_dummy, pp_profile)
+    
+    # Convert level index to pressure
+    if kltrop < nlev_len-1:
+        pTropopauseStab[ny] = 0.5 * (p[kltrop] + p[kltrop+1])
+    else:
+        pTropopauseStab[ny] = p[-1]  # Fallback to lowest level
+
+# Prepare log p-axis for plotting
+paxis = np.zeros((nlev_len), dtype='d')   
+for nlev in range(nlev_len): 
+    paxis[nlev] = M.log(p[nlev]/100,10)
+
+# Mask PV in troposphere
+for nlev in range(nlev_len): 
+    for ny in range(ny_len):
+        if p[nlev] >50000: pv_zm_tm[nlev,ny] = 0.0
+
+# Plotting parameters
+ptop = 0.8
+pbot = 3.0
+
+# Create plot
+plt.figure(figsize=(12,7))
+plt.axis([lat[ny_len-1],lat[0]+0.1, pbot,ptop])
+
+legend_elements = [
+    Line2D([0], [0], marker='o', color='w', label='WMO Tropopause',
+           markerfacecolor='red', markersize=8),
+    Line2D([0], [0], color='green', lw=4, label='Dynamical Tropopause (PV=2)'),
+    Line2D([0], [0], marker='s', color='blue', lw=0, label='Stability Tropopause',
+           markersize=8, markeredgewidth=2)
+]
+
+# Add the legend in upper right
+plt.legend(handles=legend_elements, loc='upper right', fontsize=10, 
+           framealpha=0.8, facecolor='white')
+# Plot zonal wind contours
+CS = plt.contour(lat,paxis,u_zm_tm, linewidths=1, levels=[5,10,15,25,30,35,45,50,55,65,70,75], linestyles='solid', colors='black')
+CS = plt.contour(lat,paxis,u_zm_tm, linewidths=4, levels=[20,40,60,80], linestyles='solid', colors='black')
+plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+
+CS = plt.contour(lat,paxis,u_zm_tm, linewidths=1, levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], linestyles='dashed', colors='black')
+CS = plt.contour(lat,paxis,u_zm_tm, linewidths=2, levels=[-60,-40,-20], linestyles='dashed', colors='black')
+plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+
+# Plot temperature contours
+CS = plt.contour(lat,paxis, -273.16 + temp_zm_tm, linewidths=1, levels=[10,20,30,40], linestyles='solid', colors='red')
+CS = plt.contour(lat,paxis, -273.16 + temp_zm_tm, linewidths=3, levels=[0], linestyles='dashed', colors='c')
+plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+CS = plt.contour(lat,paxis, -273.16 + temp_zm_tm, linewidths=1, levels=[-70,-50,-40,-30,-20,-10], linestyles='solid', colors='blue')
+CS = plt.contour(lat,paxis, -273.16 + temp_zm_tm, linewidths=3, levels=[-80,-60], linestyles='solid', colors='blue')
+plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+
+# Temperature color fills
+Map = plt.contourf(lat,paxis,-273.16 + temp_zm_tm, levels=[-120,-80.1], colors='mediumorchid') 
+Map = plt.contourf(lat,paxis,-273.16 + temp_zm_tm, levels=[-79.9,-60], colors='lightskyblue') 
+Map = plt.contourf(lat,paxis,-273.16 + temp_zm_tm, levels=[10,60], colors='lightsalmon')  
+Map = plt.contourf(lat,paxis,-273.16 + temp_zm_tm, levels=[-60,0], colors='lightcyan') 
+
+# 2. Plot dynamical tropopause (PV-based)
+CP = plt.contour(lat,paxis,pv_zm_tm, levels=[-2,+2], linestyles='solid', linewidths=7.0, colors=('green'))
+plt.clabel(CP, fontsize=12, inline=1, fmt='%1.0f', colors=('green'))
+
+# 1. Plot WMO tropopause (Lapse rate-based)
+for ny in range(ny_len): 
+    if abs(lat[ny])<88.0: 
+        plt.plot(lat[ny], M.log(pTropopauseWMO[ny]/100,10), "o", markersize=6, color=('red'))
+
+# 3. Plot stability-based tropopause
+for ny in range(ny_len):
+    if abs(lat[ny])<88.0:
+        plt.plot(lat[ny], M.log(pTropopauseStab[ny]/100,10), "s", markersize=6, color=('blue'))
+
+# Axis labels and ticks
+plt.xticks(np.arange(lat[ny_len-1],lat[0]+0.1,15), fontsize=15)
+plt.yticks(np.arange(pbot,ptop,-1), fontsize=15)
+
+ax = plt.gca()
+ax.axes.yaxis.set_ticklabels([])
+
+# Pressure level labels
+plt.text(lat[ny_len-1]-14,3,"1000", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.02,"100", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.02,"10", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.497,"300", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.497,"30", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.72,"500", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.72,"50", fontsize=15)
+plt.text(lat[ny_len-1]-11,2.32,"200", fontsize=15)
+plt.text(lat[ny_len-1]-8,1.32,"20", fontsize=15)
+
+# Title and annotations
+plt.title('Monthly/zonal-mean zonal wind (int.: 5 m/s), temperature (int.: 10 C)\n'
+          'Tropopauses: WMO (red), PV (green), Stability (blue) '+month+" "+str(year), 
+          fontsize=10)
+
+
+
+plt.text(80,3.20,"ERA-Interim (2 deg)", fontsize=8)
+plt.text(80,3.25,"Plot-ERAI_[MM-u_T]logp.py", fontsize=8)
+
+plt.xlabel('latitude [degrees north]', fontsize=16)
+plt.text(lat[ny_len-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
+
+# Save and show plot
+plt.savefig(direcOutput+"u_temp_zm_tm_3tropo_"+month+str(year)+".png")
+plt.show()
+plt.close()
