@@ -180,41 +180,45 @@ for ny in range(ny_len):
 # REVISED TROPOPAUSE DEFINITIONS (NO FALLBACK)
 # =============================================
 
-# Replace the separate calculations with this unified approach:
-
-# Initialize all tropopauses as NaN
+# Initialize tropopause arrays
 pTropopauseHybridMin = np.full(ny_len, np.nan)
 pTropopauseHybridCombined = np.full(ny_len, np.nan)
 
 for ny in range(ny_len):
-    # Find stability tropopause (existing troplev function)
+    # Get stability tropopause (pStab)
     kltrop = troplev(nlev_len, 1, temp_zm_tm[:,ny], np.zeros(nlev_len), p)
     pStab = 0.5*(p[kltrop]+p[kltrop+1]) if kltrop<nlev_len-1 else p[-1]
     
-    # Find hygropause (existing method)
-    pHygro = pHygropause[ny]  # From your earlier calculation
+    # Get hygropause (pHygo)
+    pHygro = pHygropause[ny]
     
-    # Hybrid (Min) - Higher pressure (lower altitude)
+    # 1. Hybrid (Min) - Higher pressure (lower altitude)
     pTropopauseHybridMin[ny] = max(pStab, pHygro)
     
-    # Hybrid (Combined) - Verify the combined criteria at this level
+    # 2. Hybrid (Combined) - Verify at Hybrid (Min) level first
     nlev = np.argmin(np.abs(p - pTropopauseHybridMin[ny]))
     if nlev < nlev_len-2:
-        zstab = (p[nlev+1]*(temp_zm_tm[nlev+2,ny]-temp_zm_tm[nlev,ny]) /
-                (temp_zm_tm[nlev+1,ny]*(p[nlev+2]-p[nlev])) +
-                Rd*temp_zm_tm[nlev+1,ny]*2.5e-4/(g*g))
+        # COMPLETE stability calculation
+        zstab = (p[nlev+1] * (temp_zm_tm[nlev+2,ny] - temp_zm_tm[nlev,ny]) /
+                (temp_zm_tm[nlev+1,ny] * max(1e-10, (p[nlev+2] - p[nlev]))) +
+                Rd * temp_zm_tm[nlev+1,ny] * 2.5e-4 / (g * g))
         q = q_profile[nlev,ny]
         
         if (zstab > 0.9*kappa) and (q < 8e-6):
             pTropopauseHybridCombined[ny] = pTropopauseHybridMin[ny]
-        else:
-            # If divergence occurs, fall back to active search
-            for nlev in range(nlev_len-3, 1, -1):
-                zstab = ... # (full calculation)
-                q = q_profile[nlev,ny]
-                if (zstab > 0.9*kappa) and (q < 8e-6):
-                    pTropopauseHybridCombined[ny] = p[nlev]
-                    break
+    
+    # If verification failed, do top-down search
+    if np.isnan(pTropopauseHybridCombined[ny]):
+        for nlev in range(nlev_len-3, 1, -1):  # Top-down
+            # COMPLETE stability calculation
+            zstab = (p[nlev+1] * (temp_zm_tm[nlev+2,ny] - temp_zm_tm[nlev,ny]) /
+                    (temp_zm_tm[nlev+1,ny] * max(1e-10, (p[nlev+2] - p[nlev]))) +
+                    Rd * temp_zm_tm[nlev+1,ny] * 2.5e-4 / (g * g))
+            q = q_profile[nlev,ny]
+            
+            if (zstab > 0.9*kappa) and (q < 8e-6) and (10000 < p[nlev] < 60000):
+                pTropopauseHybridCombined[ny] = p[nlev]
+                break
 
 # Improved Thermo-Hygro detection for extratropics
 pTropopauseHybridThermoHygro = np.full(ny_len, np.nan)
