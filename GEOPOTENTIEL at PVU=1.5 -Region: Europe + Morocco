@@ -11,6 +11,8 @@ from scipy.ndimage import gaussian_filter
 
 # Conversion factor: 1 PVU = 10^-6 K m² kg⁻¹ s⁻¹
 PVU_CONVERSION = 1e6
+# Conversion factor: geopotential to geopotential height (divide by gravity, 9.80665 m/s²)
+GRAVITY = 9.80665
 
 # Directory setup
 direcInput = "C:/Users/moham/OneDrive/Documents/stage"
@@ -18,11 +20,11 @@ direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
 
 # Create a custom colormap (cold → hot)
 colors = ['darkviolet', 'blue', 'dodgerblue', 'cyan', 'lime', 'yellow', 'orange', 'red']
-cmap = mcolors.LinearSegmentedColormap.from_list('pressure_cmap', colors, N=256)
+cmap = mcolors.LinearSegmentedColormap.from_list('altitude_cmap', colors, N=256)
 
 # Open the NetCDF file
 print("Opening the NetCDF file...")
-with nc.Dataset(direcInput+"/ccc0ef6b2ac2bf8b41aa735ee395b5a1.nc", mode='r') as f:
+with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as f:
     # Read data
     lat = f.variables["latitude"][:] 
     lon = f.variables["longitude"][:] 
@@ -58,9 +60,14 @@ with nc.Dataset(direcInput+"/ccc0ef6b2ac2bf8b41aa735ee395b5a1.nc", mode='r') as 
         pv_data = f.variables["pv"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
         pv_time = pv_data * PVU_CONVERSION
         
-        # Search for the PVU=1.5 surface
+        # Read geopotential data (convert to geopotential height in meters, then to decameters)
+        z_data = f.variables["z"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
+        z_height_m = z_data / GRAVITY  # Convert to meters
+        z_height_dam = z_height_m / 10  # Convert to decameters
+        
+        # Search for the PVU=1.5 surface and get the corresponding geopotential height
         pvu_target = 1.5
-        p_level_15pvu = np.full((len(lat_region), len(lon_region)), np.nan)
+        z_15pvu = np.full((len(lat_region), len(lon_region)), np.nan)
         
         for lat_idx in range(len(lat_region)):
             for lon_idx in range(len(lon_region)):
@@ -71,13 +78,13 @@ with nc.Dataset(direcInput+"/ccc0ef6b2ac2bf8b41aa735ee395b5a1.nc", mode='r') as 
                     level_idx = np.argmin(diff)
                     
                     if diff[level_idx] < 0.5:
-                        p_level_15pvu[lat_idx, lon_idx] = p_levels[level_idx]
+                        z_15pvu[lat_idx, lon_idx] = z_height_dam[level_idx, lat_idx, lon_idx]
         
         # Prepare data for interpolation
         lon_grid, lat_grid = np.meshgrid(lon_region, lat_region)
-        valid_mask = ~np.isnan(p_level_15pvu)
+        valid_mask = ~np.isnan(z_15pvu)
         valid_points = np.column_stack((lon_grid[valid_mask], lat_grid[valid_mask]))
-        valid_values = p_level_15pvu[valid_mask]
+        valid_values = z_15pvu[valid_mask]
         
         if len(valid_values) < 30:
             print(f"Not enough valid points ({len(valid_values)})")
@@ -89,11 +96,11 @@ with nc.Dataset(direcInput+"/ccc0ef6b2ac2bf8b41aa735ee395b5a1.nc", mode='r') as 
         lon_fine_grid, lat_fine_grid = np.meshgrid(lon_fine, lat_fine)
         
         # Interpolation
-        p_level_interp = griddata(valid_points, valid_values, 
-                                 (lon_fine_grid, lat_fine_grid), method='linear')
+        z_interp = griddata(valid_points, valid_values, 
+                           (lon_fine_grid, lat_fine_grid), method='linear')
         
         # Smoothing
-        p_level_interp = gaussian_filter(p_level_interp, sigma=1.5)
+        z_interp = gaussian_filter(z_interp, sigma=1.5)
         
         # Create figure with Cartopy
         fig = plt.figure(figsize=(14, 12))
@@ -115,38 +122,36 @@ with nc.Dataset(direcInput+"/ccc0ef6b2ac2bf8b41aa735ee395b5a1.nc", mode='r') as 
         gl.xlabel_style = {'size': 8}
         gl.ylabel_style = {'size': 8}
         
-        # Determine contour levels for the entire map
-        p_min, p_max = np.nanmin(valid_values), np.nanmax(valid_values)
-        contour_levels = np.arange(np.floor(p_min / 50) * 50, np.ceil(p_max / 50) * 50 + 50, 50)
-        norm = mcolors.Normalize(vmin=p_min, vmax=p_max)
-
-        # Reduce contour levels if necessary
-        if len(contour_levels) > 12:
-            contour_levels = contour_levels[::2]  # Take a coarser sample if there are too many levels
+        # Determine contour levels with 100 dam interval
+        z_min, z_max = np.nanmin(valid_values), np.nanmax(valid_values)
+        # Round to nearest 100 dam
+        z_min_rounded = np.floor(z_min / 100) * 100
+        z_max_rounded = np.ceil(z_max / 100) * 100
+        contour_levels = np.arange(z_min_rounded, z_max_rounded + 100, 100)
         
-        # Plot contours over the entire map
-        for level in contour_levels:
-            color = cmap(norm(level))
-            cs = ax.contour(lon_fine_grid, lat_fine_grid, p_level_interp,
-                             levels=[level], colors=[color], linewidths=2.5,
-                             transform=ccrs.PlateCarree())
-            
-            # Add labels
-            if level % 100 == 0:
-                ax.clabel(cs, fmt='%d hPa', fontsize=8, colors='black')
+        # Create a normalized colormap based on the data range
+        norm = mcolors.Normalize(vmin=z_min_rounded, vmax=z_max_rounded)
+        
+        # Plot contours with 100 dam interval and different colors
+        cs = ax.contour(lon_fine_grid, lat_fine_grid, z_interp,
+                       levels=contour_levels, linewidths=2.5,
+                       cmap=cmap, norm=norm, transform=ccrs.PlateCarree())
+        
+        # Add labels to all contours (every 100 dam)
+        ax.clabel(cs, fmt='%d dam', fontsize=8, colors='black')
         
         # Title
         time_val = time[i]
         time_dt = datetime.fromtimestamp(time_val)
         time_str = time_dt.strftime('%Y-%m-%d %H:%M UTC')
         
-        plt.title(f'Isobars at PVU=1.5 - {time_str}\nRegion: Europe + Morocco', 
+        plt.title(f'Geopotential Height at PVU=1.5 - {time_str}\nRegion: Europe + Morocco', 
                  fontsize=14, pad=20)
         
         # Add colorbar
         cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap),
                            ax=ax, orientation='horizontal', pad=0.05, aspect=30)
-        cbar.set_label('Pressure (hPa)', fontsize=11)
+        cbar.set_label('Geopotential Height (dam)', fontsize=11)
         
         # Save the figure
         plt.savefig(direcOutput + f"/map_europe_morocco_cartopy_{i:02d}.png", dpi=300, bbox_inches='tight')
