@@ -159,7 +159,7 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
         ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
         ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
         ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2)
-        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+        
         
         # Add gridlines
         gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
