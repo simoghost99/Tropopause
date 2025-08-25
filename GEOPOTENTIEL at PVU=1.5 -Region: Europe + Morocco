@@ -11,7 +11,7 @@ from scipy.ndimage import gaussian_filter
 
 # Conversion factor: 1 PVU = 10^-6 K m² kg⁻¹ s⁻¹
 PVU_CONVERSION = 1e6
-# Conversion factor: geopotential to geopotential height (divide by gravity, 9.80665 m/s²)
+# Gravité standard (m/s²)
 GRAVITY = 9.80665
 
 # Directory setup
@@ -24,19 +24,19 @@ cmap = mcolors.LinearSegmentedColormap.from_list('altitude_cmap', colors, N=256)
 
 # Open the NetCDF file
 print("Opening the NetCDF file...")
-with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as f:
+with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as f:
     # Read data
     lat = f.variables["latitude"][:] 
     lon = f.variables["longitude"][:] 
     time = f.variables["valid_time"][:]
     p_levels = f.variables["pressure_level"][:]  # Pressure levels in hPa
 
-    print(f"Original dimensions: lat={len(lat)}, lon={len(lon)}")
+    print(f"Pressure levels available: {p_levels} hPa")
 
     # Convert longitudes from 0-360° to -180-180°
     lon_corrected = np.where(lon > 180, lon - 360, lon)
     
-    # FULL REGION OF Morocco and Europe
+    # FULL REGION OF MOROCCO (including Western Sahara) and Europe
     lat_min, lat_max = 20, 55   # From the southern Sahara to the northern Europe
     lon_min, lon_max = -30, 30  # From the Atlantic to the eastern border of Europe
     
@@ -56,29 +56,71 @@ with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as 
         start_time = timemod.time()
         print(f"\nProcessing timestep {i+1}...")
         
-        # Read data
+        # Read PV data - NO CONVERSION NEEDED for ERA5!
+        # ERA5 PV is already in correct units (K m² kg⁻¹ s⁻¹)
         pv_data = f.variables["pv"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
-        pv_time = pv_data * PVU_CONVERSION
         
-        # Read geopotential data (convert to geopotential height in meters, then to decameters)
+        # Read geopotential data (convert to geopotential height in meters)
         z_data = f.variables["z"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
-        z_height_m = z_data / GRAVITY  # Convert to meters
+        z_height_m = z_data / GRAVITY  # Convert to meters (geopotential height)
         z_height_dam = z_height_m / 10  # Convert to decameters
         
-        # Search for the PVU=1.5 surface and get the corresponding geopotential height
-        pvu_target = 1.5
+        print(f"PV range in region: {np.nanmin(pv_data):.6f} to {np.nanmax(pv_data):.6f} K m² kg⁻¹ s⁻¹")
+        print(f"PV range in PVU: {np.nanmin(pv_data)*1e6:.2f} to {np.nanmax(pv_data)*1e6:.2f} PVU")
+        
+        
+
+        # Search for the PV=1.5e-6 K m² kg⁻¹ s⁻¹ surface (which equals 1.5 PVU)
+        pv_target = 1.5e-6  # 1.5 PVU in SI units
         z_15pvu = np.full((len(lat_region), len(lon_region)), np.nan)
+        valid_count = 0
         
         for lat_idx in range(len(lat_region)):
             for lon_idx in range(len(lon_region)):
-                pv_profile = pv_time[:, lat_idx, lon_idx]
+                pv_profile = pv_data[:, lat_idx, lon_idx]
+                z_profile = z_height_dam[:, lat_idx, lon_idx]
                 
                 if np.any(np.isfinite(pv_profile)):
-                    diff = np.abs(pv_profile - pvu_target)
-                    level_idx = np.argmin(diff)
+                    # Find where PV crosses 1.5 PVU using vertical interpolation
+                    # We need to handle the case where PV increases with height (typical in stratosphere)
                     
-                    if diff[level_idx] < 0.5:
-                        z_15pvu[lat_idx, lon_idx] = z_height_dam[level_idx, lat_idx, lon_idx]
+                    # Find the level where PV first exceeds 1.5 PVU (tropopause)
+                    above_target = pv_profile > pv_target
+                    valid_levels = np.where(np.isfinite(pv_profile))[0]
+                    
+                    if np.any(above_target) and np.any(~above_target[valid_levels]):
+                        # Find the transition level
+                        transition_idx = np.where(np.diff(above_target.astype(int)) > 0)[0]
+                        
+                        if len(transition_idx) > 0:
+                            idx = transition_idx[0]
+                            if idx + 1 < len(pv_profile):
+                                # Linear interpolation to find exact height
+                                pv1, pv2 = pv_profile[idx], pv_profile[idx+1]
+                                z1, z2 = z_profile[idx], z_profile[idx+1]
+                                
+                                if pv1 != pv2 and pv1 < pv_target < pv2:
+                                    fraction = (pv_target - pv1) / (pv2 - pv1)
+                                    z_interpolated = z1 + fraction * (z2 - z1)
+                                    z_15pvu[lat_idx, lon_idx] = z_interpolated
+                                    valid_count += 1
+                    
+                    # Alternative approach: find the level with PV closest to target
+                    if np.isnan(z_15pvu[lat_idx, lon_idx]) and np.any(np.isfinite(pv_profile)):
+                        closest_idx = np.nanargmin(np.abs(pv_profile - pv_target))
+                        if np.isfinite(pv_profile[closest_idx]):
+                            z_15pvu[lat_idx, lon_idx] = z_profile[closest_idx]
+                            valid_count += 1
+        
+        print(f"Found {valid_count} valid points for PV=1.5 PVU")
+        
+        if valid_count < 30:
+            print(f"Not enough valid points ({valid_count})")
+            continue
+        
+        # Filter out unrealistic values (should be between ~800-1600 dam typically)
+        realistic_mask = (z_15pvu > 600) & (z_15pvu < 2000)
+        z_15pvu[~realistic_mask] = np.nan
         
         # Prepare data for interpolation
         lon_grid, lat_grid = np.meshgrid(lon_region, lat_region)
@@ -86,9 +128,7 @@ with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as 
         valid_points = np.column_stack((lon_grid[valid_mask], lat_grid[valid_mask]))
         valid_values = z_15pvu[valid_mask]
         
-        if len(valid_values) < 30:
-            print(f"Not enough valid points ({len(valid_values)})")
-            continue
+        print(f"Geopotential height at PV=1.5 PVU range: {np.nanmin(valid_values):.1f} to {np.nanmax(valid_values):.1f} dam")
         
         # Create a grid for interpolation
         lon_fine = np.linspace(lon_min, lon_max, 80)
@@ -102,17 +142,24 @@ with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as 
         # Smoothing
         z_interp = gaussian_filter(z_interp, sigma=1.5)
         
+        # Filter interpolated values to realistic range
+        z_interp[z_interp < 600] = np.nan
+        z_interp[z_interp > 2000] = np.nan
+
+
+        
         # Create figure with Cartopy
         fig = plt.figure(figsize=(14, 12))
         ax = plt.axes(projection=ccrs.PlateCarree())
-        
+    
         # Define map extent (Europe + Morocco)
         ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
         
-        # Add geographical features without borders
+        # Add geographical features
         ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
         ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
         ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5)
         
         # Add gridlines
         gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
@@ -122,30 +169,63 @@ with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as 
         gl.xlabel_style = {'size': 8}
         gl.ylabel_style = {'size': 8}
         
-        # Determine contour levels with 100 dam interval
-        z_min, z_max = np.nanmin(valid_values), np.nanmax(valid_values)
-        # Round to nearest 100 dam
-        z_min_rounded = np.floor(z_min / 100) * 100
-        z_max_rounded = np.ceil(z_max / 100) * 100
-        contour_levels = np.arange(z_min_rounded, z_max_rounded + 100, 100)
+
+
+        # Determine contour levels with appropriate interval
+        z_min, z_max = np.nanmin(z_interp), np.nanmax(z_interp)
+        
+        # Use 50 dam interval for drawing contours
+        contour_interval = 50
+        
+        # Round to nearest contour interval
+        z_min_rounded = np.floor(z_min / contour_interval) * contour_interval
+        z_max_rounded = np.ceil(z_max / contour_interval) * contour_interval
+        contour_levels = np.arange(z_min_rounded, z_max_rounded + contour_interval, contour_interval)
+        
+        print(f"Contour levels: {contour_levels} dam")
         
         # Create a normalized colormap based on the data range
         norm = mcolors.Normalize(vmin=z_min_rounded, vmax=z_max_rounded)
         
-        # Plot contours with 100 dam interval and different colors
+        # Plot contours with different colors
         cs = ax.contour(lon_fine_grid, lat_fine_grid, z_interp,
                        levels=contour_levels, linewidths=2.5,
                        cmap=cmap, norm=norm, transform=ccrs.PlateCarree())
         
-        # Add labels to all contours (every 100 dam)
-        ax.clabel(cs, fmt='%d dam', fontsize=8, colors='black')
+        # Create levels for labeling (every 100 dam)
+        # Make sure these levels exist in the contour levels
+        label_interval = 100
+        label_levels = []
+        
+        # Find which contour levels are multiples of 100
+        for level in contour_levels:
+            if level % label_interval == 0:  # Only label levels that are multiples of 100
+                label_levels.append(level)
+        
+        # If no levels are multiples of 100, find the closest ones
+        if not label_levels:
+            for target_level in np.arange(
+                np.floor(z_min / label_interval) * label_interval,
+                np.ceil(z_max / label_interval) * label_interval + label_interval,
+                label_interval
+            ):
+                # Find the closest contour level to this target
+                closest_level = min(contour_levels, key=lambda x: abs(x - target_level))
+                if closest_level not in label_levels:
+                    label_levels.append(closest_level)
+        
+        print(f"Label levels: {label_levels} dam")
+        
+        
+        # This will automatically place labels on the contours
+        ax.clabel(cs, levels=label_levels, fmt='%d', fontsize=9)
         
         # Title
         time_val = time[i]
         time_dt = datetime.fromtimestamp(time_val)
         time_str = time_dt.strftime('%Y-%m-%d %H:%M UTC')
         
-        plt.title(f'Geopotential Height at PVU=1.5 - {time_str}\nRegion: Europe + Morocco', 
+        plt.title(f'Geopotential Height at PV=1.5 PVU - {time_str}\nRegion: Europe + Morocco', 
                  fontsize=14, pad=20)
         
         # Add colorbar
@@ -154,7 +234,7 @@ with nc.Dataset(direcInput+"/78fecb096216f2852181c4618c5e8cbb.nc", mode='r') as 
         cbar.set_label('Geopotential Height (dam)', fontsize=11)
         
         # Save the figure
-        plt.savefig(direcOutput + f"/map_europe_morocco_cartopy_{i:02d}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(direcOutput + f"/map_europe_morocco_pv15_{i:02d}.png", dpi=300, bbox_inches='tight')
         plt.show()
         plt.close()
         
