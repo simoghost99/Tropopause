@@ -9,11 +9,12 @@ import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
 import geopandas as gpd
-import cartopy.feature as cfeature
+
 # Constants
-GRAVITY = 9.80665
-RD = 287.05
-RKAPPA = 0.2854
+GRAVITY = 9.80665  # m/s^2
+RD = 287.05        # J/(kg*K) - Gas constant for dry air
+RKAPPA = 0.2854    # RD/CP for dry air
+CP = 1004.0        # J/(kg*K) - Specific heat at constant pressure
 
 # Directory setup
 direcInput = "C:/Users/moham/OneDrive/Documents/stage"
@@ -24,66 +25,103 @@ colors = ['#000080', '#0000FF', '#0080FF', '#00FFFF', '#80FF80',
           '#FFFF00', '#FF8000', '#FF0000', '#800000']
 cmap = mcolors.LinearSegmentedColormap.from_list('tropopause_cmap', colors, N=256)
 
-def find_tropopause_level(temp_profile, q_profile, p_levels_pa):
+# --- CORRECTED Tropopause Detection Functions ---
+
+def detect_tropopause_stability(temp_profile, p_levels_pa):
     """
-    Find tropopause level using WMO definition
+    Alternative implementation using the exact formula from the documentation.
+    Searches from top downward to find the highest tropopause.
     """
-    nlev = len(temp_profile)
+    kflev = len(p_levels_pa)
     
-    # Calculate lapse rates directly from pressure levels
-    lapse_rates = np.zeros(nlev - 1)
-    for i in range(nlev - 1):
-        # dT/dz ≈ (dT/dp) * (dp/dz) ≈ (dT/dp) * (-ρg)
-        # Simplified lapse rate calculation
-        dT = temp_profile[i+1] - temp_profile[i]
-        dp = p_levels_pa[i+1] - p_levels_pa[i]
-        if dp != 0:
-            lapse_rates[i] = (dT / dp) * (-p_levels_pa[i] * GRAVITY / (RD * temp_profile[i])) * 1000
+    # Find indices for the 70-500 hPa range
+    valid_indices = np.where((p_levels_pa >= 7000) & (p_levels_pa <= 50000))[0]
     
-    # Find tropopause using WMO criteria
-    for i in range(15, nlev - 5):  # Start from around 400 hPa
-        if lapse_rates[i] <= 2.0:  # 2°C/km or less
-            # Check if this is a consistent tropopause
-            if (np.mean(lapse_rates[i:i+3]) <= 2.0 and 
-                q_profile[i] < 5e-6):  # Dry air
-                return i
+    if len(valid_indices) == 0:
+        return np.nan
     
-    # Fallback: cold point tropopause
-    min_temp_idx = np.argmin(temp_profile[15:]) + 15
-    return min_temp_idx
+    # Iterate from TOP (70 hPa) to BOTTOM (500 hPa)
+    for idx in range(len(valid_indices)-1, -1, -1):
+        j = valid_indices[idx]
+        
+        # Check if we have enough levels for the calculation
+        if j + 2 >= kflev:
+            continue
+            
+        # Use the exact formula: zstab = pp[j+1] * (pt[j+2] - pt[j]) / (pt[j+1] * (pp[j+2] - pp[j])) + RD * pt[j+1] * 2.5e-4 / (RG * RG)
+        numerator = p_levels_pa[j+1] * (temp_profile[j+2] - temp_profile[j])
+        denominator = temp_profile[j+1] * (p_levels_pa[j+2] - p_levels_pa[j])
+        
+        if denominator == 0:
+            continue
+            
+        zstab = numerator / denominator + RD * temp_profile[j+1] * 2.5e-4 / (GRAVITY**2)
+        
+        if zstab >= RKAPPA:
+            trop_pressure = p_levels_pa[j] / 100.0  # Convert to hPa
+            
+            # Validate the result
+            if trop_pressure < 50 or trop_pressure > 500:
+                continue
+            return trop_pressure
+    
+    return np.nan
 
-def detect_tropopause_stability(temp_profile, q_profile, p_levels_pa):
-    """Detect tropopause using stability method."""
-    try:
-        trop_level = find_tropopause_level(temp_profile, q_profile, p_levels_pa)
-        return p_levels_pa[trop_level] / 100  # Convert to hPa
-    except:
+def detect_tropopause_hygropause(q_profile, p_levels_pa):
+    """
+    Improved hygropause method with better handling of edge cases.
+    """
+    kflev = len(p_levels_pa)
+    
+    # Convert q from kg/kg to mg/kg (1 kg/kg = 1,000,000 mg/kg)
+    q_mgkg = q_profile * 1e6
+    
+    # Find indices for the 70-500 hPa range
+    valid_indices = np.where((p_levels_pa >= 7000) & (p_levels_pa <= 50000))[0]
+    
+    if len(valid_indices) == 0:
         return np.nan
-
-def detect_tropopause_hygropause(temp_profile, q_profile, p_levels_pa):
-    try:
-        for i in range(10, len(q_profile) - 5):  # start a bit lower (~700 hPa)
-            # Threshold less strict
-            if (q_profile[i] < 5e-6 and np.mean(q_profile[i:i+3]) < 1e-5):
-                return p_levels_pa[i] / 100
-        return np.nan
-    except:
-        return np.nan
-
+    
+    # Iterate from top (70 hPa) to bottom (500 hPa) to find the HIGHEST level that meets criteria
+    for idx in range(len(valid_indices)-1, -1, -1):
+        j = valid_indices[idx]
+        
+        # Check if we have at least 2 levels below the current level
+        if j + 2 >= kflev:
+            continue
+            
+        # Check the hygropause criteria
+        current_q = q_mgkg[j]
+        two_below_q = q_mgkg[j + 2]
+        
+        if current_q > 3.0 and two_below_q > 5.0:
+            trop_pressure = p_levels_pa[j] / 100.0  # Convert to hPa
+            
+            # Validate the result
+            if trop_pressure < 50 or trop_pressure > 500:
+                continue  # Try next level instead of returning NaN
+            return trop_pressure
+    
+    # If no level found, return NaN
+    return np.nan
 
 def detect_tropopause_hybrid(temp_profile, q_profile, p_levels_pa):
-    """Detect tropopause using hybrid method."""
-    p_stab = detect_tropopause_stability(temp_profile, q_profile, p_levels_pa)
-    p_hygro = detect_tropopause_hygropause(temp_profile, q_profile, p_levels_pa)
+    """
+    Hybrid method: uses both stability and hygropause criteria.
+    Returns the higher tropopause (lower pressure) if both are found.
+    """
+    p_stab = detect_tropopause_stability(temp_profile, p_levels_pa)
+    p_hygro = detect_tropopause_hygropause(q_profile, p_levels_pa)
     
-    if np.isnan(p_stab) and np.isnan(p_hygro):
-        return np.nan
-    elif np.isnan(p_stab):
-        return p_hygro
-    elif np.isnan(p_hygro):
+    # If both found, choose the higher tropopause (lower pressure)
+    if not np.isnan(p_stab) and not np.isnan(p_hygro):
+        return min(p_stab, p_hygro)
+    elif not np.isnan(p_stab):
         return p_stab
-    
-    return min(p_stab, p_hygro)
+    elif not np.isnan(p_hygro):
+        return p_hygro
+    else:
+        return np.nan
 
 # Open the NetCDF file
 print("Opening the NetCDF file...")
@@ -118,36 +156,40 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
     for i in range(min(16, len(time))):
         start_time = timemod.time()
         print(f"\nProcessing timestep {i+1}...")
-        
+
+        # Extract only the defined region
         temp_data = f.variables["t"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
+        z_data = f.variables["z"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1] / GRAVITY
         q_data = f.variables["q"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1]
-        
+        pv_data = f.variables["pv"][i, :, lat_indices[0]:lat_indices[-1]+1, lon_indices[0]:lon_indices[-1]+1] * 1e6
+
         for method in methods:
             print(f"Processing {method} method...")
-            
+
             tropopause_p = np.full((len(lat_region), len(lon_region)), np.nan)
             valid_count = 0
-            
-            for lat_idx in range(len(lat_region)):
-                for lon_idx in range(len(lon_region)):
-                    temp_profile = temp_data[:, lat_idx, lon_idx]
-                    q_profile = q_data[:, lat_idx, lon_idx]
-                    
+
+            for iy in range(len(lat_region)):
+                for ix in range(len(lon_region)):
+                    temp_profile = temp_data[:, iy, ix]
+                    q_profile = q_data[:, iy, ix]
+
                     if np.all(np.isfinite(temp_profile)) and np.all(np.isfinite(q_profile)):
                         if method == 'stability':
-                            p_trop = detect_tropopause_stability(temp_profile, q_profile, p_levels_pa)
+                            p_trop = detect_tropopause_stability(temp_profile, p_levels_pa)
                         elif method == 'hygropause':
-                            p_trop = detect_tropopause_hygropause(temp_profile, q_profile, p_levels_pa)
+                            p_trop = detect_tropopause_hygropause(q_profile, p_levels_pa)
                         elif method == 'hybrid':
                             p_trop = detect_tropopause_hybrid(temp_profile, q_profile, p_levels_pa)
-                        
+
                         if not np.isnan(p_trop) and 50 < p_trop < 500:
-                            tropopause_p[lat_idx, lon_idx] = p_trop
+                            tropopause_p[iy, ix] = p_trop
                             valid_count += 1
-            
+
             print(f"Found {valid_count} valid points")
-            
+
             if valid_count < 30:
+                print(f"Skipping {method} method - not enough valid points")
                 continue
             
             # Prepare for interpolation
@@ -155,6 +197,7 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
             valid_mask = ~np.isnan(tropopause_p)
             
             if np.sum(valid_mask) == 0:
+                print(f"No valid points for interpolation in {method} method")
                 continue
                 
             valid_points = np.column_stack((lon_grid[valid_mask], lat_grid[valid_mask]))
@@ -178,26 +221,24 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
             # Set EXACT map extent - no margins
             ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
         
-
             # Add coastlines
             ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.8, edgecolor='black')
 
-        
-
-            # Load Morocco shapefile (ADM0 = whole country, no subdivisions)
-            morocco = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
-
-            # Draw Morocco outline
-            for geometry in morocco["geometry"]:
-                ax.add_geometries(
-                    [geometry],
-                    crs=ccrs.PlateCarree(),
-                    facecolor='none',
-                    edgecolor='black',
-                    linewidth=1.5,   # a bit thicker to highlight
-                    zorder=5
-                )
-
+            # Load Morocco shapefile
+            try:
+                morocco = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
+                # Draw Morocco outline
+                for geometry in morocco["geometry"]:
+                    ax.add_geometries(
+                        [geometry],
+                        crs=ccrs.PlateCarree(),
+                        facecolor='none',
+                        edgecolor='black',
+                        linewidth=1.5,
+                        zorder=5
+                    )
+            except Exception as e:
+                print(f"Could not load Morocco shapefile: {e}")
            
             # Add gridlines with exact boundaries
             gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
@@ -206,8 +247,8 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
             gl.right_labels = False
             gl.left_labels = True
             gl.bottom_labels = True
-            gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))  # 30W, 20W, 10W, 0, 10E, 20E, 30E
-            gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))    # 20N, 25N, 30N, 35N, 40N, 45N, 50N, 55N
+            gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))
+            gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))
             gl.xlabel_style = {'size': 10, 'color': 'black'}
             gl.ylabel_style = {'size': 10, 'color': 'black'}
 
@@ -262,5 +303,6 @@ with nc.Dataset(direcInput+"/629f42bac50cf310898d868e4fd1d664.nc", mode='r') as 
             
             end_time = timemod.time()
             print(f"{method_name} map {i+1} generated in {end_time - start_time:.1f}s")
+            
 
 print("All tropopause maps generated successfully!")
