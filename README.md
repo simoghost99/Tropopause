@@ -95,7 +95,7 @@ These visualizations allow a **side-by-side comparison** of classical and new me
 
 ## References
 
-- ECMWF ERA5 Reanalysis: [https://www.ecmwf.int/en/forecasts/datasets/reanalysis-datasets/era5](https://www.ecmwf.int/en/forecasts/datasets/reanalysis-datasets/era5)  
+- ECMWF ERA5 Reanalysis: [https://www.ecmwf.int/en/forecasts/datasets/reanalysis-datasets/era5](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=download)  
 - Classical tropopause definitions: WMO lapse-rate and 2-PVU dynamic tropopause.  
 - Internship-developed methods: Stability, hygropause, and hybrid tropopause detection.
 
