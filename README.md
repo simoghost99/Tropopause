@@ -1,32 +1,74 @@
-# Potential Vorticity Analysis
 
-This notebook analyzes atmospheric data using **ERA5 files**. It calculates brightness temperature differences, zonal means, and potential vorticity to identify tropopause pressure levels. The analysis helps visualize temperature, ozone, and wind patterns across various pressure levels in the atmosphere. All plots represent data for January 1, 2010, at 00:00 UTC, but the time can be modified by using the appropriate ERA5 dataset file. Additionally, the notebook performs a **monthly mean analysis** for January 2010 for better long-term trend insights.
 
-## Libraries Used
-- **xarray**: For working with multidimensional arrays, especially atmospheric data like temperature, ozone, and winds.
-- **matplotlib.colors**: For defining color maps in data visualizations.
-- **numpy**: For numerical operations and array manipulations like temperature differences and zonal means.
-- **matplotlib.pyplot**: For creating 2D visualizations of the data.
-- **cartopy.crs**: For geospatial projections in visualizing data on maps.
-- **cartopy.feature**: Adds map features like coastlines and borders to plots.
-- **matplotlib.patches**: Used for custom shapes or markers on plots, such as custom legends or regions.
-- **matplotlib.ticker**: Formats tick marks on axes, such as latitudes, longitudes, or pressure levels.
-- **scipy.ndimage**: Uses gaussian_filter to smooth or blur noisy data.
-
-## Internship Notebook
-The Jupyter notebook contains the detailed code implementation for this analysis, including the steps for calculating brightness temperature differences, zonal means, and potential vorticity. It also includes notes on the challenges faced, failures, and mistakes during the process. This notebook serves as a useful reference for troubleshooting and further refinement of the analysis pipeline.
-
-## Link to Geographic Maps
-The geographic maps of PV can be accessed here: [PV Maps for January 2010](https://github.com/simoghost99/PV/blob/main/PV%20at%20%7Blevel%7D%20hPa%20with%20Tropopauses%20(January%202010))
+This repository analyzes ERA5 atmospheric data to detect and map the tropopause using multiple methods, including classical and **internship-developed methods**: stability, hygropause, and hybrid approaches. The analysis includes global maps, vertical profiles, and method comparisons.
 
 ---
 
-**Results Confirmed:**
-- PV ≈ 0 at the equator (dynamic tropopause not detectable).
+## Repository Structure
 
-These results validate the initial observations. Feel free to adjust the pressure level in the code to verify further.
+Tropopause/
+├─ tropopause-detection-mapping.ipynb # Main notebook
+├─ data/ # ERA5 NetCDF input files
+├─ outputs/ # Generated plots and results
+├─ utils/ # Optional helper scripts
+└─ README.md # Documentation
 
-Additionally, a **monthly mean** for January 2010 is calculated to provide insights into the long-term trends for the period.
+yaml
+Copy code
 
-Best regards,  
+---
+
+## Setup and Usage
+
+### 1. Install Python libraries
+
+pip install netCDF4 xarray numpy matplotlib cartopy metpy scipy
+### 2. Download ERA5 data
+Pressure-level data: temperature, geopotential, humidity
+
+Complete dataset: 2-PVU tropopause (optional for comparison)
+
+See the Copernicus Climate Data Store (CDS) for instructions.
+
+### 3. Prepare Data
+Place the downloaded NetCDF files in the data/ directory and update paths in the notebook if necessary.
+
+### 4. Run the Notebook
+Open tropopause-detection-mapping.ipynb and execute all cells. The notebook will:
+
+Load ERA5 data via netCDF4 and xarray.
+
+Compute tropopause heights using all methods: thermal (WMO), dynamic (2 PVU), stability, hygropause, and hybrid.
+
+Generate global maps, vertical profiles, and comparison plots.
+
+Optionally calculate monthly means for selected periods.
+
+Comparison of Tropopause Detection Methods
+Method	Example Plot
+Thermal (WMO)	
+Dynamic (2 PVU)	
+Stability	
+Hygropause	
+Hybrid	
+
+These plots allow a side-by-side comparison of classical and new methods, highlighting differences and improvements from stability, hygropause, and hybrid approaches.
+
+### Results Confirmed
+Classical and new methods produce consistent results in mid-latitudes.
+
+Tropical tropopause is higher than polar tropopause across all methods.
+
+Hybrid methods reduce local inconsistencies and smooth extreme values.
+
+Monthly mean analyses provide long-term trend insights for selected periods.
+
+### References
+ECMWF ERA5 Reanalysis: https://www.ecmwf.int/en/forecasts/datasets/reanalysis-datasets/era5
+
+Classical tropopause definitions: WMO lapse-rate and 2-PVU dynamic tropopause.
+
+Internship-developed methods: Stability, hygropause, and hybrid tropopause detection.
+
+Best regards,
 Mohammed El Abdioui
