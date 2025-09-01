@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Tropopause detection and plotting (pressure-level ERA5)
+- troplev(kflev, ktroptype, pt, pq, pp) (ECMWF-like)
+- ktroptype: 1=stability, 2=humidity(+600m), 3=hybrid (exact hybrid block provided)
+- Loops every 3 hours and saves maps of tropopause GEOPOTENTIAL HEIGHT (dam)
+"""
+
+import numpy as np
+import netCDF4 as nc
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from datetime import datetime
+import time as timemod
+import matplotlib.colors as mcolors
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
+import geopandas as gpd
+import os
+
+# -------------------------
+# Constants & paths
+# -------------------------
+GRAVITY = 9.80665  # m/s^2
+RD = 287.05        # J/(kg*K)
+CP = 1004.0        # J/(kg*K)
+RKAPPA = RD / CP   # ~0.2854
+
+direcInput  = "C:/Users/moham/OneDrive/Documents/stage"
+direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
+nc_file     = os.path.join(direcInput, "629f42bac50cf310898d868e4fd1d664.nc")
+
+os.makedirs(direcOutput, exist_ok=True)
+
+# Colormap
+colors = ['#000080', '#0000FF', '#0080FF', '#00FFFF', '#80FF80',
+          '#FFFF00', '#FF8000', '#FF0000', '#800000']
+cmap = mcolors.LinearSegmentedColormap.from_list('tropopause_cmap', colors, N=256)
+
+# =========================
+# troplev : EXACT ECMWF logic (1,2,3)
+# =========================
+def troplev(kflev, ktroptype, pt, pq, pp):
+    """
+    Determine tropopause level based on temperature, humidity, and pressure.
+
+    Parameters
+    ----------
+    kflev : int
+        Number of model levels (length of arrays)
+    ktroptype : int
+        1 = stability method
+        2 = humidity method with 600 m check
+        3 = hybrid (stability + humidity criteria as provided)
+    pt : 1D array (K) ordered TOP -> BOTTOM (lowest pressure first)
+    pq : 1D array (kg/kg) ordered TOP -> BOTTOM
+    pp : 1D array (Pa) ordered TOP -> BOTTOM
+
+    Returns
+    -------
+    kltrop : int
+        Tropopause model level index (index in the TOP->BOTTOM arrays)
+    """
+    # Constants local
+    RD_loc = 287.05     # J/(kg*K)
+    RG_loc = 9.80665    # m/s^2
+    RKAPPA_loc = 0.2854 # RD/CP
+
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
+
+    for j in range(ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+
+            if ktroptype == 1:
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+                if kltrop == ilevm2 and zstab > RKAPPA_loc:
+                    kltrop = j
+
+            elif ktroptype == 2:
+                if kltrop == ilevm2 and pq[j] > 3.0e-6:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+
+            elif ktroptype == 3:
+                # --- HYBRID: exact block you provided ---
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+
+                if kltrop == ilevm2 and pq[j] > 3.0e-6 and zstab > RKAPPA_loc:
+
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+
+
+
+                    jj = j
+
+                    while jj <= ilevm2 and zpm <= zp600m:
+
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+
+                        jj += 1
+
+                    if jj < kflev and pq[jj] > 5.0e-6:
+
+                        kltrop = j
+                # --- end hybrid block ---
+
+        elif pp[j] > 5.0e4 and kltrop == ilevm2:
+            kltrop = j - 1
+
+    return kltrop
+
+# =========================
+# Helper: order top->bottom
+# =========================
+def order_top_to_bottom(pp_pa):
+    """Return index array that orders pp_pa from lowest pressure to highest (top->bottom)."""
+    return np.argsort(pp_pa)
+
+# =========================
+# Main
+# =========================
+if __name__ == "__main__":
+
+    print("Opening NetCDF:", nc_file)
+    with nc.Dataset(nc_file, mode='r') as f:
+
+        lat = f.variables["latitude"][:]
+        lon = f.variables["longitude"][:]
+        time_var = f.variables["valid_time"][:]   # seconds since epoch
+        plev_hpa = f.variables["pressure_level"][:]   # hPa
+        pp_pa = plev_hpa * 100.0
+
+        # region
+        lon_corr = np.where(lon > 180, lon - 360, lon)
+        lat_min, lat_max = 20, 55
+        lon_min, lon_max = -30, 30
+        lat_idx = np.where((lat >= lat_min) & (lat <= lat_max))[0]
+        lon_idx = np.where((lon_corr >= lon_min) & (lon_corr <= lon_max))[0]
+        lat_region = lat[lat_idx]
+        lon_region = lon_corr[lon_idx]
+
+        print(f"Region: {len(lat_region)} x {len(lon_region)}; pressure levels (hPa): {plev_hpa}")
+
+        order_idx = order_top_to_bottom(pp_pa)   # index to reorder arrays TOP->BOTTOM
+        pp_tb = pp_pa[order_idx]
+
+        methods = {1: "stability", 2: "hygropause", 3: "hybrid"}
+
+        # loop every 3 hours
+        for it in range(0, len(time_var), 3):
+            t0 = timemod.time()
+            print(f"\nTime step {it}/{len(time_var)-1} (every 3h) ...")
+
+            # slice region
+            T = f.variables["t"][it, :, lat_idx[0]:lat_idx[-1]+1, lon_idx[0]:lon_idx[-1]+1]  # K (lev, lat, lon)
+            Q = f.variables["q"][it, :, lat_idx[0]:lat_idx[-1]+1, lon_idx[0]:lon_idx[-1]+1]  # kg/kg
+            Z = f.variables["z"][it, :, lat_idx[0]:lat_idx[-1]+1, lon_idx[0]:lon_idx[-1]+1]  # geopotential m2/s2
+
+            # geopotential height in meters then decameters
+            Zg_m = Z / GRAVITY            # meters
+            Zg_dam = Zg_m / 10.0         # decameters
+
+            for kt in [1, 2, 3]:
+                method_name = methods[kt]
+                print("  Method:", method_name)
+
+                tropo_dam = np.full((len(lat_region), len(lon_region)), np.nan)
+                tropo_press_hpa = np.full((len(lat_region), len(lon_region)), np.nan)
+                valid = 0
+
+                # grid loop (lat, lon)
+                for iy in range(len(lat_region)):
+                    for ix in range(len(lon_region)):
+                        pt_col = T[:, iy, ix]
+                        pq_col = Q[:, iy, ix]
+                        zg_col_dam = Zg_dam[:, iy, ix]
+
+                        if not (np.all(np.isfinite(pt_col)) and np.all(np.isfinite(pq_col)) and np.all(np.isfinite(zg_col_dam))):
+                            continue
+
+                        # reorder to top->bottom
+                        pt_tb = pt_col[order_idx]
+                        pq_tb = pq_col[order_idx]
+                        zg_tb = zg_col_dam[order_idx]
+
+                        kflev = len(pp_tb)
+                        klt = troplev(kflev, kt, pt_tb, pq_tb, pp_tb)
+
+                        # troplev returns an int index (or default kflev-2)
+                        try:
+                            kint = int(klt)
+                        except:
+                            continue
+
+                        if 0 <= kint < kflev:
+                            tropo_dam[iy, ix] = zg_tb[kint]         # dam
+                            tropo_press_hpa[iy, ix] = pp_tb[kint]/100.0
+                            valid += 1
+
+                print(f"    valid points: {valid}")
+                if valid < 30:
+                    print("    Not enough valid points -> skipping plot for this method/time.")
+                    continue
+
+                # interpolation to fine grid
+                LONg, LATg = np.meshgrid(lon_region, lat_region)
+                mask = np.isfinite(tropo_dam)
+                pts = np.column_stack((LONg[mask], LATg[mask]))
+                vals = tropo_dam[mask]
+
+                lon_f = np.linspace(lon_min, lon_max, 120)
+                lat_f = np.linspace(lat_min, lat_max, 120)
+                Lonf, Latf = np.meshgrid(lon_f, lat_f)
+                Hf = griddata(pts, vals, (Lonf, Latf), method='cubic')
+                Hf = gaussian_filter(Hf, sigma=1.2)
+
+                # clip to reasonable dam range (e.g. 200 dam = 2000 m to 2000 dam = 20000 m)
+                Hf = np.clip(Hf, 200.0, 2000.0)
+
+                # plot (dam)
+                fig = plt.figure(figsize=(16, 12))
+                ax = plt.axes(projection=ccrs.PlateCarree())
+                ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+                ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.8, edgecolor='black')
+                
+
+                # optional Morocco polygon
+                try:
+                    mor = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
+                    for geometry in mor["geometry"]:
+                        ax.add_geometries([geometry], crs=ccrs.PlateCarree(),
+                                          facecolor='none', edgecolor='black', linewidth=1.5, zorder=5)
+                except Exception as e:
+                    print("    Morocco shapefile not loaded:", e)
+
+                gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
+                                  linewidth=0.5, color='gray', alpha=0.7, linestyle='--')
+                gl.top_labels = False
+                gl.right_labels = False
+                gl.left_labels = True
+                gl.bottom_labels = True
+                gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))
+                gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))
+                gl.xlabel_style = {'size': 10, 'color': 'black'}
+                gl.ylabel_style = {'size': 10, 'color': 'black'}
+
+                # contour levels in dam (e.g. 200 -> 2000 dam)
+                levels_dam = np.arange(200, 2001, 20)  # every 20 dam = 200 m
+
+                cs = ax.contourf(Lonf, Latf, Hf, levels=levels_dam, cmap=cmap,
+                                 transform=ccrs.PlateCarree(), alpha=0.85, extend='both')
+                cl = ax.contour(Lonf, Latf, Hf, levels=levels_dam, colors='black', linewidths=0.7,
+                                transform=ccrs.PlateCarree(), alpha=0.7)
+                plt.clabel(cl, levels=levels_dam[::5], fmt='%d', fontsize=9, colors='black')  # label every 5
+
+                tval = int(time_var[it])
+                tdt = datetime.utcfromtimestamp(tval)
+                tstr = tdt.strftime('%Y-%m-%d %H:%M UTC')
+
+                plt.title(f"Tropopause Geopotential Height (dam) — {method_name}\n{tstr}",
+                          fontsize=16, fontweight='bold', pad=18)
+
+                cbar = plt.colorbar(cs, ax=ax, orientation='horizontal', pad=0.08, aspect=40, shrink=0.8)
+                cbar.set_label('Tropopause Geopotential Height (dam)', fontsize=12, fontweight='bold')
+                cbar.ax.tick_params(labelsize=10)
+
+                plt.text(0.02, 0.02, 'Data: ECMWF ERA5 (pressure levels)', transform=ax.transAxes,
+                         fontsize=9, color='gray', alpha=0.7)
+                plt.text(0.98, 0.02, f'Lon: {lon_min}° to {lon_max}°\nLat: {lat_min}° to {lat_max}°',
+                         transform=ax.transAxes, fontsize=9, color='gray', alpha=0.7, ha='right')
+
+                outfile = os.path.join(direcOutput, f"tropopause_dam_{method_name}_{it:03d}.png")
+                plt.savefig(outfile, dpi=300, bbox_inches='tight', facecolor='white')
+                plt.show()
+                plt.close()
+
+                print(f"    Saved: {outfile}  (elapsed {timemod.time()-t0:.1f}s)")
+
+    print("All done: tropopause DAM maps (every 3h) generated.")
