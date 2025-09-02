@@ -1,10 +1,9 @@
 import numpy as np
 import netCDF4 as nc
+from netCDF4 import num2date
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from datetime import datetime
-import time as timemod
 import matplotlib.colors as mcolors
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
@@ -26,7 +25,8 @@ print("Opening the NetCDF file...")
 with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
     lat = f.variables["latitude"][:]
     lon = f.variables["longitude"][:]
-    time = f.variables["valid_time"][:]
+    time_var = f.variables["valid_time"]
+    times = num2date(time_var[:], units=time_var.units)
     p_levels = f.variables["pressure_level"][:]
     print(f"Pressure levels available: {p_levels} hPa")
 
@@ -53,8 +53,7 @@ with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
     print(f"Europe + Morocco region: {len(lat_region)} x {len(lon_region)} points")
     print(f"Range: {lat_region.min():.1f}–{lat_region.max():.1f}°N, {lon_region.min():.1f}–{lon_region.max():.1f}°E")
 
-    for it in range(min(16, len(time))):
-        t0 = timemod.time()
+    for it in range(min(16, len(times))):
         print(f"\nProcessing timestep {it+1}...")
 
         pv_full = f.variables["pv"][it, :, :, :][...]
@@ -181,8 +180,10 @@ with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
         except Exception as e:
             print("    Morocco shapefile not loaded:", e)
 
-        time_dt = datetime.fromtimestamp(time[it])
+        # --- Correct time handling ---
+        time_dt = times[it]
         time_str = time_dt.strftime('%Y-%m-%d %H:%M UTC')
+
         plt.title(f'Geopotential Height at PV=1.5 PVU - {time_str}\nRegion: Europe + Morocco',
                   fontsize=14, pad=20)
 
@@ -192,3 +193,4 @@ with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
         plt.savefig(direcOutput + f"/map_europe_morocco_pv15_{it:02d}.png", dpi=300, bbox_inches='tight')
         plt.show()
         plt.close()
+
