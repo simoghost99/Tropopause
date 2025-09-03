@@ -132,7 +132,7 @@ if __name__ == "__main__":
         temp = f.variables["t"][:, :, :, :]
         pv = f.variables["pv"][:, :, :, :]  # PV in PVU units
         pv = pv * 1e6  # convert PV to PVU
-        q = f.variables["q"][:, :, :, :]   vbn
+        q = f.variables["q"][:, :, :, :]   
         nlev_len, ny_len = temp_zm_tm.shape
         
         print("Calculating tropopause using different methods...")
