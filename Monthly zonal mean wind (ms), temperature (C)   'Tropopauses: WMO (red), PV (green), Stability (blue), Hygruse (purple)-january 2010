@@ -16,6 +16,47 @@ radius_earth = 6370000.0
 pi = M.pi
 omega_earth = 0.00007292
 
+def troplev(kflev, ktroptype, pt, pq, pp):
+    RD = 287.05
+    RG = 9.80665
+    RKAPPA = 0.2854  # ~ Rd/Cp
+
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
+    if kflev < 3:
+        return kltrop
+
+    for j in range(0, ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+            zstab = (pp[j+1] * (pt[j+2] - pt[j]) /
+                     (pt[j+1] * (pp[j+2] - pp[j]))) \
+                    + RD * pt[j+1] * 2.5e-4 / (RG * RG)
+
+            if ktroptype == 1:
+                if kltrop == ilevm2 and zstab > RKAPPA:
+                    kltrop = j
+
+            elif ktroptype == 3:
+                if (kltrop == ilevm2) and (pq[j] > 3.0e-6) and (zstab > RKAPPA):
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA - pp[j]**RKAPPA)
+                    zb = pt[j] - za * pp[j]**RKAPPA
+                    ztm = 0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA))**(1.0 / RKAPPA)
+                    zp600m = zpm + 600.0 * RG * zpm / (RD * ztm)
+
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA + pp[jj+1]**RKAPPA))**(1.0 / RKAPPA)
+                        jj += 1
+                        if jj >= ilevm2:
+                            break
+
+                    if jj < len(pq) and (pq[jj] > 5.0e-6):
+                        kltrop = j
+        elif (pp[j] > 5.0e4) and (kltrop == ilevm2):
+            kltrop = max(0, j - 1)
+    return kltrop
+
 direcInput = "C:/Users/moham/OneDrive/Documents/stage"
 direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
 
