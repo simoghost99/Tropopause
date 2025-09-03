@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+"""
+Monthly mean hygropause analysis - Aarnout van Delden style
+Tropopause-humidité (hygropause) only
+"""
+
+import numpy as np
+import netCDF4 as nc
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import math as M
+import os
+import time
+
+# -------------------------
+# Constants
+# -------------------------
+GRAVITY = 9.80665
+RD = 287.05
+CP = 1004.0
+RKAPPA = RD / CP
+
+# -------------------------
+# Paths
+# -------------------------
+direcInput = "C:/Users/moham/OneDrive/Documents/stage"
+direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
+nc_file = os.path.join(direcInput, "629f42bac50cf310898d868e4fd1d664.nc")
+
+os.makedirs(direcOutput, exist_ok=True)
+
+# =========================
+# Hygropause detection
+# =========================
+def find_hygropause(q_zm_tm, pp_pa):
+    """
+    Hygropause detection for all latitudes at once
+    """
+    nlev, nlat = q_zm_tm.shape
+    pp_tb = np.sort(pp_pa)
+    order_idx = np.argsort(pp_pa)
+    
+    # Reorder data to be top-to-bottom
+    q_tb = q_zm_tm[order_idx, :]
+    
+    # Initialize results
+    tropopause_pressures = np.full(nlat, np.nan)
+    
+    # Find valid pressure range (70-500 hPa)
+    valid_p_mask = (pp_tb >= 7000) & (pp_tb <= 50000)
+    valid_indices = np.where(valid_p_mask)[0]
+    
+    # Hygropause method
+    for j in valid_indices:
+        if j < 2:
+            continue
+            
+        # Check humidity conditions for all latitudes at once
+        mask = (q_tb[j, :] > 3.0e-6) & (q_tb[j-2, :] > 5.0e-6) & np.isnan(tropopause_pressures)
+        tropopause_pressures[mask] = pp_tb[j]
+    
+    return tropopause_pressures
+
+# =========================
+# Main - Hygropause Only
+# =========================
+if __name__ == "__main__":
+    start_time = time.time()
+    
+    print("Opening NetCDF:", nc_file)
+    with nc.Dataset(nc_file, mode='r') as f:
+        # Read basic dimensions
+        lat = f.variables["latitude"][:]
+        lon = f.variables["longitude"][:]
+        plev_hpa = f.variables["pressure_level"][:]
+        pp_pa = plev_hpa * 100.0
+        
+        print("Reading and processing data...")
+        
+        # Read all data at once for efficiency
+        u = f.variables["u"][:, :, :, :]   # time, level, lat, lon
+        temp = f.variables["t"][:, :, :, :]
+        q = f.variables["q"][:, :, :, :]   # specific humidity
+        
+        # Calculate zonal means (mean over longitude axis)
+        u_zm = np.mean(u, axis=3)
+        temp_zm = np.mean(temp, axis=3)
+        q_zm = np.mean(q, axis=3)
+        
+        # Calculate monthly means (mean over time axis)
+        u_zm_tm = np.mean(u_zm, axis=0)
+        temp_zm_tm = np.mean(temp_zm, axis=0)
+        q_zm_tm = np.mean(q_zm, axis=0)
+        
+        # Handle boundary conditions
+        u_zm_tm[:, 0] = 0
+        u_zm_tm[:, -1] = 0
+        temp_zm_tm[:, 0] = temp_zm_tm[:, 1]
+        temp_zm_tm[:, -1] = temp_zm_tm[:, -2]
+        q_zm_tm[:, 0] = q_zm_tm[:, 1]
+        q_zm_tm[:, -1] = q_zm_tm[:, -2]
+        
+        nlev_len, ny_len = temp_zm_tm.shape
+        
+        print("Calculating hygropause...")
+        
+        # Calculate hygropause
+        pHygropause = find_hygropause(q_zm_tm, pp_pa)
+        
+        # Prepare for plotting
+        paxis = np.log10(pp_pa / 100)  # log10 of pressure in hPa
+        ptop = 0.8  # log10(10 hPa)
+        pbot = 3.0  # log10(1000 hPa)
+        
+        print("Creating hygropause plot...")
+        
+        # ---------- PLOT ----------
+        plt.figure(figsize=(12, 7))
+        plt.axis([lat[-1], lat[0] + 0.1, pbot, ptop])
+        
+        # Create legend for hygropause only
+        legend_elements = [
+            Line2D([0], [0], marker='D', color='purple', lw=0, label='Hygropause',
+                   markersize=8, markeredgewidth=2),
+        ]
+        plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.8, facecolor='white')
+        
+        # Plot zonal wind contours
+        CS = plt.contour(lat, paxis, u_zm_tm, linewidths=1, levels=[5,10,15,25,30,35,45,50,55,65,70,75], 
+                         linestyles='solid', colors='black')
+        CS = plt.contour(lat, paxis, u_zm_tm, linewidths=4, levels=[20,40,60,80], 
+                         linestyles='solid', colors='black')
+        plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+        
+        CS = plt.contour(lat, paxis, u_zm_tm, linewidths=1, levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], 
+                         linestyles='dashed', colors='black')
+        CS = plt.contour(lat, paxis, u_zm_tm, linewidths=2, levels=[-60,-40,-20], 
+                         linestyles='dashed', colors='black')
+        plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+        
+        # Plot temperature contours
+        temp_c = temp_zm_tm - 273.16
+        CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[10,20,30,40], 
+                         linestyles='solid', colors='red')
+        CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[0], 
+                         linestyles='dashed', colors='c')
+        plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+        
+        CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[-70,-50,-40,-30,-20,-10], 
+                         linestyles='solid', colors='blue')
+        CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[-80,-60], 
+                         linestyles='solid', colors='blue')
+        plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+        
+        # Fill temperature regions
+        plt.contourf(lat, paxis, temp_c, levels=[-120,-80.1], colors='mediumorchid') 
+        plt.contourf(lat, paxis, temp_c, levels=[-79.9,-60], colors='lightskyblue') 
+        plt.contourf(lat, paxis, temp_c, levels=[10,60], colors='lightsalmon')  
+        plt.contourf(lat, paxis, temp_c, levels=[-60,0], colors='lightcyan') 
+        
+        # Plot hygropause
+        valid_lat_mask = np.abs(lat) < 88.0
+        hygro_mask = valid_lat_mask & ~np.isnan(pHygropause)
+        plt.plot(lat[hygro_mask], np.log10(pHygropause[hygro_mask]/100), "D", 
+                 markersize=6, color='purple')
+        
+        # Final plot formatting
+        plt.xticks(np.arange(lat[-1], lat[0] + 0.1, 15), fontsize=15)
+        plt.yticks(np.arange(pbot, ptop, -1), fontsize=15)
+        
+        ax = plt.gca()
+        ax.axes.yaxis.set_ticklabels([])
+        
+        # Add pressure labels
+        plt.text(lat[-1]-14, 3, "1000", fontsize=15)
+        plt.text(lat[-1]-11, 2.02, "100", fontsize=15)
+        plt.text(lat[-1]-8, 1.02, "10", fontsize=15)
+        plt.text(lat[-1]-11, 2.497, "300", fontsize=15)
+        plt.text(lat[-1]-8, 1.497, "30", fontsize=15)
+        plt.text(lat[-1]-11, 2.72, "500", fontsize=15)
+        plt.text(lat[-1]-8, 1.72, "50", fontsize=15)
+        plt.text(lat[-1]-11, 2.32, "200", fontsize=15)
+        plt.text(lat[-1]-8, 1.32, "20", fontsize=15)
+        
+        # Title and labels
+        plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
+                  'Hygropause - January 2010', 
+                  fontsize=12)
+        
+        plt.text(80, 3.20, "ERA5", fontsize=8)
+        plt.text(80, 3.25, "Hygropause Analysis", fontsize=8)
+        
+        plt.xlabel('latitude [degrees north]', fontsize=16)
+        plt.text(lat[-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
+        
+        # Save and show
+        outfile = os.path.join(direcOutput, "tropopause_hygropause_only_jan2010.png")
+        plt.savefig(outfile, dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+        
+        elapsed_time = time.time() - start_time
+        print(f"Saved: {outfile}")
+        print(f"Execution time: {elapsed_time:.2f} seconds")
+
+    print("All done: Hygropause cross-section generated.")
