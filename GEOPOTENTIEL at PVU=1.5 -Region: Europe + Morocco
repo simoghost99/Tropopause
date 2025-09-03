@@ -184,7 +184,7 @@ with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
         time_dt = times[it]
         time_str = time_dt.strftime('%Y-%m-%d %H:%M UTC')
 
-        plt.title(f'Geopotential Height at PV=1.5 PVU - {time_str}\nRegion: Europe + Morocco',
+        plt.title(f'Geopotential Height at 1.5 PVU - {time_str}\nRegion: Europe + Morocco',
                   fontsize=14, pad=20)
 
         cbar = plt.colorbar(cf, ax=ax, orientation='horizontal', pad=0.05, aspect=30)
@@ -193,4 +193,3 @@ with nc.Dataset(direcInput + "/629f42bac50cf310898d868e4fd1d664.nc", "r") as f:
         plt.savefig(direcOutput + f"/map_europe_morocco_pv15_{it:02d}.png", dpi=300, bbox_inches='tight')
         plt.show()
         plt.close()
-
