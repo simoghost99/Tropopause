@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Combined tropopause analysis with Hybrid and Thermal methods - CORRECTED
+Combined tropopause analysis with Hygropause and Thermal methods
 """
 
 import numpy as np
@@ -29,69 +29,35 @@ nc_file = os.path.join(direcInput, "6d772be982907b488c8caefd91616826.nc")
 os.makedirs(direcOutput, exist_ok=True)
 
 # =========================
-# CORRECTED Hybrid tropopause detection
+# Hygropause detection
 # =========================
-def find_hybrid_tropopause_corrected(temp_zm_tm, q_zm_tm, pp_pa):
+def find_hygropause(q_zm_tm, pp_pa):
     """
-    Corrected hybrid tropopause detection based on the reference implementation
+    Hygropause detection based on humidity thresholds
     """
-    nlev, nlat = temp_zm_tm.shape
+    nlev, nlat = q_zm_tm.shape
     
     # Sort pressure levels (top to bottom)
     sort_idx = np.argsort(pp_pa)
     pp_tb = pp_pa[sort_idx]
-    temp_tb = temp_zm_tm[sort_idx, :]
     q_tb = q_zm_tm[sort_idx, :]
     
     # Initialize results
-    hybrid_pressures = np.full(nlat, np.nan)
-    
-    # Hybrid method constants
-    RD_loc = 287.05
-    RG_loc = 9.80665
-    RKAPPA_loc = 0.2854
+    hygropause_pressures = np.full(nlat, np.nan)
     
     # Find valid pressure range (70-500 hPa)
     valid_p_mask = (pp_tb >= 7000) & (pp_tb <= 50000)
     valid_indices = np.where(valid_p_mask)[0]
     
     for j in valid_indices:
-        if j < 2 or j > nlev-3:  # Need at least j+2 levels
+        if j < 2:
             continue
             
-        # Calculate stability criterion
-        zstab = pp_tb[j+1] * (temp_tb[j+2, :] - temp_tb[j, :]) / \
-                (temp_tb[j+1, :] * (pp_tb[j+2] - pp_tb[j])) + \
-                (RD_loc * temp_tb[j+1, :] * 2.5e-4 / (RG_loc * RG_loc))
-        
-        # Check initial conditions (hygropause + stability)
-        initial_mask = (q_tb[j, :] > 3.0e-6) & (zstab > RKAPPA_loc) & np.isnan(hybrid_pressures)
-        
-        if np.any(initial_mask):
-            # For latitudes that meet initial conditions, check +600m condition
-            for lat_idx in np.where(initial_mask)[0]:
-                # Calculate temperature profile parameters
-                za = (temp_tb[j+1, lat_idx] - temp_tb[j, lat_idx]) / \
-                     (pp_tb[j+1]**RKAPPA_loc - pp_tb[j]**RKAPPA_loc)
-                zb = temp_tb[j, lat_idx] - za * pp_tb[j]**RKAPPA_loc
-                
-                # Calculate mean temperature and pressure
-                ztm = 0.5 * (pp_tb[j+1]**RKAPPA_loc + pp_tb[j]**RKAPPA_loc) * za + zb
-                zpm = (0.5 * (pp_tb[j+1]**RKAPPA_loc + pp_tb[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
-                
-                # Calculate pressure at 600m above
-                zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
-                
-                # Find level where pressure exceeds zp600m
-                jj = j
-                while jj <= nlev-3 and (0.5 * (pp_tb[jj+2]**RKAPPA_loc + pp_tb[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc) <= zp600m:
-                    jj += 1
-                
-                # Check if humidity condition is met at the higher level
-                if jj < nlev and q_tb[min(jj, nlev-1), lat_idx] > 5.0e-6:
-                    hybrid_pressures[lat_idx] = pp_tb[j]
+        # Check humidity conditions for all latitudes at once
+        mask = (q_tb[j, :] > 3.0e-6) & (q_tb[j-2, :] > 5.0e-6) & np.isnan(hygropause_pressures)
+        hygropause_pressures[mask] = pp_tb[j]
     
-    return hybrid_pressures
+    return hygropause_pressures
 
 # =========================
 # Thermal tropopause detection
@@ -243,7 +209,7 @@ def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_s
     return var_zm_tm
 
 # =========================
-# Main - HYBRID AND THERMAL ONLY
+# Main - HYGROPAUSE AND THERMAL ONLY
 # =========================
 if __name__ == "__main__":
     start_time = time.time()
@@ -280,13 +246,13 @@ if __name__ == "__main__":
             
             print("Calculating tropopause using different methods...")
             
-            # Calculate hybrid and thermal tropopause
-            pHybrid = find_hybrid_tropopause_corrected(temp_zm_tm, q_zm_tm, pp_pa)
+            # Calculate hygropause and thermal tropopause
+            pHygropause = find_hygropause(q_zm_tm, pp_pa)
             pThermal = find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa)
             
-            hybrid_valid = np.sum(~np.isnan(pHybrid))
+            hygro_valid = np.sum(~np.isnan(pHygropause))
             thermal_valid = np.sum(~np.isnan(pThermal))
-            print(f"Hybrid tropopause found at {hybrid_valid} of {ny_len} latitudes")
+            print(f"Hygropause found at {hygro_valid} of {ny_len} latitudes")
             print(f"Thermal tropopause found at {thermal_valid} of {ny_len} latitudes")
             
             # Prepare for plotting
@@ -302,7 +268,7 @@ if __name__ == "__main__":
             
             # Create legend
             legend_elements = [
-                Line2D([0], [0], marker='^', color='green', lw=0, label='Hybrid Tropopause',
+                Line2D([0], [0], marker='D', color='green', lw=0, label='Hygropause',
                        markersize=8, markeredgewidth=2),
                 Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause',
                        markersize=8, markeredgewidth=2)
@@ -345,9 +311,9 @@ if __name__ == "__main__":
             # Plot all tropopause types
             valid_lat_mask = np.abs(lat) < 88.0
             
-            # Hybrid tropopause
-            hybrid_mask = valid_lat_mask & ~np.isnan(pHybrid)
-            plt.plot(lat[hybrid_mask], np.log10(pHybrid[hybrid_mask]/100), "^", 
+            # Hygropause
+            hygro_mask = valid_lat_mask & ~np.isnan(pHygropause)
+            plt.plot(lat[hygro_mask], np.log10(pHygropause[hygro_mask]/100), "D", 
                      markersize=6, color='green', alpha=0.8)
             
             # Thermal tropopause
@@ -380,7 +346,7 @@ if __name__ == "__main__":
             
             # Title and labels
             plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
-                      'Hybrid (green), Thermal (red)', 
+                      'Hygropause (green), Thermal (red)', 
                       fontsize=10)
             
             plt.text(80, 3.20, "ERA5", fontsize=8)
@@ -390,7 +356,7 @@ if __name__ == "__main__":
             plt.text(lat[-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
             
             # Save and show
-            outfile = os.path.join(direcOutput, "tropopause_hybrid_thermal_comparison.png")
+            outfile = os.path.join(direcOutput, "tropopause_hygro_thermal_comparison.png")
             plt.savefig(outfile, dpi=300, bbox_inches='tight')
             plt.show()
             plt.close()
