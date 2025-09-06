@@ -101,6 +101,153 @@ def order_top_to_bottom(pp_pa):
     return np.argsort(pp_pa)
 
 # =========================
+# Process a single time step for a specific method
+# =========================
+def process_time_step(it, kt, method_name, f, lat_idx, lon_idx, lat_order, lon_order, pp_tb, order_idx, lat_region, lon_region):
+    """Process a single time step for a specific tropopause detection method."""
+    t0 = timemod.time()
+    print(f"  Processing time step {it} for method {method_name}...")
+    
+    # --- slice & reorder correctly ---
+    T_full = f.variables["t"][it, :, :, :]
+    Q_full = f.variables["q"][it, :, :, :]
+    Z_full = f.variables["z"][it, :, :, :]
+
+    T_sub = np.take(np.take(T_full, lat_idx, axis=1), lon_idx, axis=2)
+    Q_sub = np.take(np.take(Q_full, lat_idx, axis=1), lon_idx, axis=2)
+    Z_sub = np.take(np.take(Z_full, lat_idx, axis=1), lon_idx, axis=2)
+
+    T = T_sub[:, lat_order, :][:, :, lon_order]
+    Q = Q_sub[:, lat_order, :][:, :, lon_order]
+    Z = Z_sub[:, lat_order, :][:, :, lon_order]
+
+    # geopotential height (m → dam)
+    Zg_m = Z / GRAVITY
+    Zg_dam = Zg_m / 10.0
+
+    tropo_dam = np.full((len(lat_region), len(lon_region)), np.nan)
+    tropo_press_hpa = np.full((len(lat_region), len(lon_region)), np.nan)
+    valid = 0
+
+    for iy in range(len(lat_region)):
+        for ix in range(len(lon_region)):
+            pt_col = T[:, iy, ix]
+            pq_col = Q[:, iy, ix]
+            zg_col_dam = Zg_dam[:, iy, ix]
+
+            if not (np.all(np.isfinite(pt_col)) and np.all(np.isfinite(pq_col)) and np.all(np.isfinite(zg_col_dam))):
+                continue
+
+            pt_tb = pt_col[order_idx]
+            pq_tb = pq_col[order_idx]
+            zg_tb = zg_col_dam[order_idx]
+
+            kflev = len(pp_tb)
+            klt = troplev(kflev, kt, pt_tb, pq_tb, pp_tb)
+
+            try:
+                kint = int(klt)
+            except:
+                continue
+
+            if 0 <= kint < kflev:
+                tropo_dam[iy, ix] = zg_tb[kint]
+                tropo_press_hpa[iy, ix] = pp_tb[kint]/100.0
+                valid += 1
+
+    print(f"    valid points: {valid}")
+    if valid < 30:
+        print("    Not enough valid points -> skipping plot.")
+        return
+
+    # interpolation - improved like second code
+    LONg, LATg = np.meshgrid(lon_region, lat_region)
+    mask = np.isfinite(tropo_dam)
+    pts = np.column_stack((LONg[mask], LATg[mask]))
+    vals = tropo_dam[mask]
+
+    lon_f = np.linspace(lon_min, lon_max, 200)  # Increased resolution
+    lat_f = np.linspace(lat_min, lat_max, 200)
+    Lonf, Latf = np.meshgrid(lon_f, lat_f)
+    
+    # Use linear + nearest fill like second code
+    Hf_lin = griddata(pts, vals, (Lonf, Latf), method='linear')
+    Hf_near = griddata(pts, vals, (Lonf, Latf), method='nearest')
+    Hf = np.where(np.isnan(Hf_lin), Hf_near, Hf_lin)
+    
+    Hf = gaussian_filter(Hf, sigma=1.5)  # Increased smoothing
+    Hf = np.clip(Hf, 200.0, 2000.0)
+
+    # plot - updated to match second code style
+    fig = plt.figure(figsize=(14, 12))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
+    
+    # Add features like second code
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+    ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2)
+
+    try:
+        mor = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
+        for geometry in mor["geometry"]:
+            ax.add_geometries([geometry], crs=ccrs.PlateCarree(),
+                              facecolor='none', edgecolor='black', linewidth=1.5, zorder=5)
+    except Exception as e:
+        print("    Morocco shapefile not loaded:", e)
+
+    gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
+                      linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.left_labels = True
+    gl.bottom_labels = True
+    gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))
+    gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))
+    gl.xlabel_style = {'size': 8}
+    gl.ylabel_style = {'size': 8}
+
+    # Dynamic contour levels like second code
+    zmin, zmax = np.nanmin(Hf), np.nanmax(Hf)
+    contour_interval = 50  # Changed from 20 to 50
+    zmin_rounded = np.floor(zmin / contour_interval) * contour_interval
+    zmax_rounded = np.ceil(zmax / contour_interval) * contour_interval
+    levels_dam = np.arange(zmin_rounded, zmax_rounded + contour_interval, contour_interval)
+    
+    norm = mcolors.Normalize(vmin=zmin_rounded, vmax=zmax_rounded)
+    cs = ax.contourf(Lonf, Latf, Hf, levels=levels_dam, cmap=cmap,
+                     transform=ccrs.PlateCarree(), alpha=0.85, extend='both', norm=norm)
+    cl = ax.contour(Lonf, Latf, Hf, levels=levels_dam, colors='black', linewidths=0.7,
+                    transform=ccrs.PlateCarree(), alpha=0.7)
+    
+    # Label only major contours like second code
+    label_levels = [lev for lev in levels_dam if (lev % 100) == 0]
+    plt.clabel(cl, levels=label_levels, fmt='%d', fontsize=8, colors='black')
+
+    tval = int(time_var[it])
+    tdt = datetime.utcfromtimestamp(tval)
+    tstr = tdt.strftime('%Y-%m-%d %H:%M UTC')
+
+    plt.title(f"Tropopause Geopotential Height (dam) — {method_name}\n{tstr}",
+              fontsize=14, fontweight='bold', pad=20)
+
+    cbar = plt.colorbar(cs, ax=ax, orientation='horizontal', pad=0.05, aspect=30, shrink=0.8)
+    cbar.set_label('Tropopause Geopotential Height (dam)', fontsize=11)
+    cbar.ax.tick_params(labelsize=10)
+
+    plt.text(0.02, 0.02, 'Data: ECMWF ERA5 (pressure levels)', transform=ax.transAxes,
+             fontsize=9, color='gray', alpha=0.7)
+    plt.text(0.98, 0.02, f'Lon: {lon_min}° to {lon_max}°\nLat: {lat_min}° to {lat_max}°',
+             transform=ax.transAxes, fontsize=9, color='gray', alpha=0.7, ha='right')
+
+    outfile = os.path.join(direcOutput, f"tropopause_dam_{method_name}_{it:03d}.png")
+    plt.savefig(outfile, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.show()
+    plt.close()
+
+    print(f"    Saved: {outfile}  (elapsed {timemod.time()-t0:.1f}s)")
+
+# =========================
 # Main
 # =========================
 if __name__ == "__main__":
@@ -134,158 +281,24 @@ if __name__ == "__main__":
         lon_region = lon_region[lon_order]
 
         print(f"Region: {len(lat_region)} x {len(lon_region)}; pressure levels (hPa): {plev_hpa}")
+        print(f"Total time steps: {len(time_var)}")
 
         order_idx = order_top_to_bottom(pp_pa)
         pp_tb = pp_pa[order_idx]
 
         methods = {1: "stability", 2: "hygropause", 3: "hybrid"}
 
-        # loop every 3 hours
-        for it in range(0, len(time_var), 3):
-            t0 = timemod.time()
-            print(f"\nTime step {it}/{len(time_var)-1} (every 3h) ...")
+        # Process each method independently for ALL time steps
+        for kt, method_name in methods.items():
+            print(f"\nProcessing method: {method_name}")
+            
+            # Create a subdirectory for this method
+            method_dir = os.path.join(direcOutput, method_name)
+            os.makedirs(method_dir, exist_ok=True)
+            
+            # Process ALL time steps for this method
+            for it in range(len(time_var)):
+                process_time_step(it, kt, method_name, f, lat_idx, lon_idx, lat_order, 
+                                 lon_order, pp_tb, order_idx, lat_region, lon_region)
 
-            # --- slice & reorder correctly ---
-            T_full = f.variables["t"][it, :, :, :]
-            Q_full = f.variables["q"][it, :, :, :]
-            Z_full = f.variables["z"][it, :, :, :]
-
-            T_sub = np.take(np.take(T_full, lat_idx, axis=1), lon_idx, axis=2)
-            Q_sub = np.take(np.take(Q_full, lat_idx, axis=1), lon_idx, axis=2)
-            Z_sub = np.take(np.take(Z_full, lat_idx, axis=1), lon_idx, axis=2)
-
-            T = T_sub[:, lat_order, :][:, :, lon_order]
-            Q = Q_sub[:, lat_order, :][:, :, lon_order]
-            Z = Z_sub[:, lat_order, :][:, :, lon_order]
-
-            # geopotential height (m → dam)
-            Zg_m = Z / GRAVITY
-            Zg_dam = Zg_m / 10.0
-
-            for kt in [1, 2, 3]:
-                method_name = methods[kt]
-                print("  Method:", method_name)
-
-                tropo_dam = np.full((len(lat_region), len(lon_region)), np.nan)
-                tropo_press_hpa = np.full((len(lat_region), len(lon_region)), np.nan)
-                valid = 0
-
-                for iy in range(len(lat_region)):
-                    for ix in range(len(lon_region)):
-                        pt_col = T[:, iy, ix]
-                        pq_col = Q[:, iy, ix]
-                        zg_col_dam = Zg_dam[:, iy, ix]
-
-                        if not (np.all(np.isfinite(pt_col)) and np.all(np.isfinite(pq_col)) and np.all(np.isfinite(zg_col_dam))):
-                            continue
-
-                        pt_tb = pt_col[order_idx]
-                        pq_tb = pq_col[order_idx]
-                        zg_tb = zg_col_dam[order_idx]
-
-                        kflev = len(pp_tb)
-                        klt = troplev(kflev, kt, pt_tb, pq_tb, pp_tb)
-
-                        try:
-                            kint = int(klt)
-                        except:
-                            continue
-
-                        if 0 <= kint < kflev:
-                            tropo_dam[iy, ix] = zg_tb[kint]
-                            tropo_press_hpa[iy, ix] = pp_tb[kint]/100.0
-                            valid += 1
-
-                print(f"    valid points: {valid}")
-                if valid < 30:
-                    print("    Not enough valid points -> skipping plot.")
-                    continue
-
-                # interpolation - improved like second code
-                LONg, LATg = np.meshgrid(lon_region, lat_region)
-                mask = np.isfinite(tropo_dam)
-                pts = np.column_stack((LONg[mask], LATg[mask]))
-                vals = tropo_dam[mask]
-
-                lon_f = np.linspace(lon_min, lon_max, 200)  # Increased resolution
-                lat_f = np.linspace(lat_min, lat_max, 200)
-                Lonf, Latf = np.meshgrid(lon_f, lat_f)
-                
-                # Use linear + nearest fill like second code
-                Hf_lin = griddata(pts, vals, (Lonf, Latf), method='linear')
-                Hf_near = griddata(pts, vals, (Lonf, Latf), method='nearest')
-                Hf = np.where(np.isnan(Hf_lin), Hf_near, Hf_lin)
-                
-                Hf = gaussian_filter(Hf, sigma=1.5)  # Increased smoothing
-                Hf = np.clip(Hf, 200.0, 2000.0)
-
-                # plot - updated to match second code style
-                fig = plt.figure(figsize=(14, 12))
-                ax = plt.axes(projection=ccrs.PlateCarree())
-                ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
-                
-                # Add features like second code
-                ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
-                ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-                ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2)
-
-                try:
-                    mor = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
-                    for geometry in mor["geometry"]:
-                        ax.add_geometries([geometry], crs=ccrs.PlateCarree(),
-                                          facecolor='none', edgecolor='black', linewidth=1.5, zorder=5)
-                except Exception as e:
-                    print("    Morocco shapefile not loaded:", e)
-
-                gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
-                                  linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
-                gl.top_labels = False
-                gl.right_labels = False
-                gl.left_labels = True
-                gl.bottom_labels = True
-                gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))
-                gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))
-                gl.xlabel_style = {'size': 8}
-                gl.ylabel_style = {'size': 8}
-
-                # Dynamic contour levels like second code
-                zmin, zmax = np.nanmin(Hf), np.nanmax(Hf)
-                contour_interval = 50  # Changed from 20 to 50
-                zmin_rounded = np.floor(zmin / contour_interval) * contour_interval
-                zmax_rounded = np.ceil(zmax / contour_interval) * contour_interval
-                levels_dam = np.arange(zmin_rounded, zmax_rounded + contour_interval, contour_interval)
-                
-                norm = mcolors.Normalize(vmin=zmin_rounded, vmax=zmax_rounded)
-                cs = ax.contourf(Lonf, Latf, Hf, levels=levels_dam, cmap=cmap,
-                                 transform=ccrs.PlateCarree(), alpha=0.85, extend='both', norm=norm)
-                cl = ax.contour(Lonf, Latf, Hf, levels=levels_dam, colors='black', linewidths=0.7,
-                                transform=ccrs.PlateCarree(), alpha=0.7)
-                
-                # Label only major contours like second code
-                label_levels = [lev for lev in levels_dam if (lev % 100) == 0]
-                plt.clabel(cl, levels=label_levels, fmt='%d', fontsize=8, colors='black')
-
-                tval = int(time_var[it])
-                tdt = datetime.utcfromtimestamp(tval)
-                tstr = tdt.strftime('%Y-%m-%d %H:%M UTC')
-
-                plt.title(f"Tropopause Geopotential Height (dam) — {method_name}\n{tstr}",
-                          fontsize=14, fontweight='bold', pad=20)
-
-                cbar = plt.colorbar(cs, ax=ax, orientation='horizontal', pad=0.05, aspect=30, shrink=0.8)
-                cbar.set_label('Tropopause Geopotential Height (dam)', fontsize=11)
-                cbar.ax.tick_params(labelsize=10)
-
-                plt.text(0.02, 0.02, 'Data: ECMWF ERA5 (pressure levels)', transform=ax.transAxes,
-                         fontsize=9, color='gray', alpha=0.7)
-                plt.text(0.98, 0.02, f'Lon: {lon_min}° to {lon_max}°\nLat: {lat_min}° to {lat_max}°',
-                         transform=ax.transAxes, fontsize=9, color='gray', alpha=0.7, ha='right')
-
-                outfile = os.path.join(direcOutput, f"tropopause_dam_{method_name}_{it:03d}.png")
-                plt.savefig(outfile, dpi=300, bbox_inches='tight', facecolor='white')
-                plt.show()
-                plt.close()
-
-                print(f"    Saved: {outfile}  (elapsed {timemod.time()-t0:.1f}s)")
-
-    print("All done: tropopause DAM maps (every 3h) generated.")
+    print("All done: 16 maps for each of the 3 methods (total 48 maps) generated.")
