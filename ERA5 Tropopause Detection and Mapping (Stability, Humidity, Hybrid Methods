@@ -30,13 +30,12 @@ RKAPPA = RD / CP   # ~0.2854
 
 direcInput  = "C:/Users/moham/OneDrive/Documents/stage"
 direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
-nc_file     = os.path.join(direcInput, "629f42bac50cf310898d868e4fd1d664.nc")
+nc_file     = os.path.join(direcInput, "791e9f8e7419113c2d958d96babf7008.nc")
 
 os.makedirs(direcOutput, exist_ok=True)
 
-# Colormap
-colors = ['#000080', '#0000FF', '#0080FF', '#00FFFF', '#80FF80',
-          '#FFFF00', '#FF8000', '#FF0000', '#800000']
+# Colormap - Updated to match second code
+colors = ['darkviolet', 'blue', 'dodgerblue', 'cyan', 'lime', 'yellow', 'orange', 'red']
 cmap = mcolors.LinearSegmentedColormap.from_list('tropopause_cmap', colors, N=256)
 
 # =========================
@@ -202,24 +201,33 @@ if __name__ == "__main__":
                     print("    Not enough valid points -> skipping plot.")
                     continue
 
-                # interpolation
+                # interpolation - improved like second code
                 LONg, LATg = np.meshgrid(lon_region, lat_region)
                 mask = np.isfinite(tropo_dam)
                 pts = np.column_stack((LONg[mask], LATg[mask]))
                 vals = tropo_dam[mask]
 
-                lon_f = np.linspace(lon_min, lon_max, 120)
-                lat_f = np.linspace(lat_min, lat_max, 120)
+                lon_f = np.linspace(lon_min, lon_max, 200)  # Increased resolution
+                lat_f = np.linspace(lat_min, lat_max, 200)
                 Lonf, Latf = np.meshgrid(lon_f, lat_f)
-                Hf = griddata(pts, vals, (Lonf, Latf), method='cubic')
-                Hf = gaussian_filter(Hf, sigma=1.2)
+                
+                # Use linear + nearest fill like second code
+                Hf_lin = griddata(pts, vals, (Lonf, Latf), method='linear')
+                Hf_near = griddata(pts, vals, (Lonf, Latf), method='nearest')
+                Hf = np.where(np.isnan(Hf_lin), Hf_near, Hf_lin)
+                
+                Hf = gaussian_filter(Hf, sigma=1.5)  # Increased smoothing
                 Hf = np.clip(Hf, 200.0, 2000.0)
 
-                # plot
-                fig = plt.figure(figsize=(16, 12))
+                # plot - updated to match second code style
+                fig = plt.figure(figsize=(14, 12))
                 ax = plt.axes(projection=ccrs.PlateCarree())
                 ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=ccrs.PlateCarree())
-                ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.8, edgecolor='black')
+                
+                # Add features like second code
+                ax.add_feature(cfeature.COASTLINE, linewidth=0.8)
+                ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+                ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2)
 
                 try:
                     mor = gpd.read_file(r"C:/Users/moham/OneDrive/Documents/stage/Morocco_ADM0_simplified.simplified.geojson")
@@ -230,32 +238,42 @@ if __name__ == "__main__":
                     print("    Morocco shapefile not loaded:", e)
 
                 gl = ax.gridlines(crs=ccrs.PlateCarree(), draw_labels=True,
-                                  linewidth=0.5, color='gray', alpha=0.7, linestyle='--')
+                                  linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
                 gl.top_labels = False
                 gl.right_labels = False
                 gl.left_labels = True
                 gl.bottom_labels = True
                 gl.xlocator = plt.FixedLocator(np.arange(-30, 31, 10))
                 gl.ylocator = plt.FixedLocator(np.arange(20, 56, 5))
-                gl.xlabel_style = {'size': 10, 'color': 'black'}
-                gl.ylabel_style = {'size': 10, 'color': 'black'}
+                gl.xlabel_style = {'size': 8}
+                gl.ylabel_style = {'size': 8}
 
-                levels_dam = np.arange(200, 2001, 20)
+                # Dynamic contour levels like second code
+                zmin, zmax = np.nanmin(Hf), np.nanmax(Hf)
+                contour_interval = 50  # Changed from 20 to 50
+                zmin_rounded = np.floor(zmin / contour_interval) * contour_interval
+                zmax_rounded = np.ceil(zmax / contour_interval) * contour_interval
+                levels_dam = np.arange(zmin_rounded, zmax_rounded + contour_interval, contour_interval)
+                
+                norm = mcolors.Normalize(vmin=zmin_rounded, vmax=zmax_rounded)
                 cs = ax.contourf(Lonf, Latf, Hf, levels=levels_dam, cmap=cmap,
-                                 transform=ccrs.PlateCarree(), alpha=0.85, extend='both')
+                                 transform=ccrs.PlateCarree(), alpha=0.85, extend='both', norm=norm)
                 cl = ax.contour(Lonf, Latf, Hf, levels=levels_dam, colors='black', linewidths=0.7,
                                 transform=ccrs.PlateCarree(), alpha=0.7)
-                plt.clabel(cl, levels=levels_dam[::5], fmt='%d', fontsize=9, colors='black')
+                
+                # Label only major contours like second code
+                label_levels = [lev for lev in levels_dam if (lev % 100) == 0]
+                plt.clabel(cl, levels=label_levels, fmt='%d', fontsize=8, colors='black')
 
                 tval = int(time_var[it])
                 tdt = datetime.utcfromtimestamp(tval)
                 tstr = tdt.strftime('%Y-%m-%d %H:%M UTC')
 
                 plt.title(f"Tropopause Geopotential Height (dam) — {method_name}\n{tstr}",
-                          fontsize=16, fontweight='bold', pad=18)
+                          fontsize=14, fontweight='bold', pad=20)
 
-                cbar = plt.colorbar(cs, ax=ax, orientation='horizontal', pad=0.08, aspect=40, shrink=0.8)
-                cbar.set_label('Tropopause Geopotential Height (dam)', fontsize=12, fontweight='bold')
+                cbar = plt.colorbar(cs, ax=ax, orientation='horizontal', pad=0.05, aspect=30, shrink=0.8)
+                cbar.set_label('Tropopause Geopotential Height (dam)', fontsize=11)
                 cbar.ax.tick_params(labelsize=10)
 
                 plt.text(0.02, 0.02, 'Data: ECMWF ERA5 (pressure levels)', transform=ax.transAxes,
