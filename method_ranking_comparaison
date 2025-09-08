@@ -1,0 +1,580 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+from skimage import transform, metrics, color
+import os
+import re
+import pandas as pd
+from datetime import datetime
+
+class WV_TropopauseComparator:
+    def __init__(self, wv_dir, method_dirs, method_names, output_dir):
+        self.wv_dir = wv_dir
+        self.method_dirs = method_dirs
+        self.method_names = method_names
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # WV images
+        self.wv_files = sorted([f for f in os.listdir(wv_dir) 
+                                if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif'))])
+        print(f"Found {len(self.wv_files)} water vapor images in {wv_dir}")
+
+    def parse_wv_filename(self, filename):
+        """
+        Parse WV filename like '27oct00H00.PNG' -> '20241027_0000'
+        """
+        basename = os.path.splitext(filename)[0].lower()
+        pattern = r'(\d{1,2})([a-z]{3})(\d{2})h?(\d{2})'
+        match = re.match(pattern, basename)
+        if match:
+            day = match.group(1).zfill(2)
+            month_str = match.group(2)
+            hour = match.group(3).zfill(2)
+            minute = match.group(4).zfill(2)
+
+            month_map = {
+                'jan': '01','feb': '02','mar': '03','apr': '04',
+                'may': '05','jun': '06','jul': '07','aug': '08',
+                'sep': '09','oct': '10','nov': '11','dec': '12'
+            }
+            month = month_map.get(month_str, '10')
+            year = '2024'
+            return f"{year}{month}{day}_{hour}{minute}"
+        return None
+
+    def parse_method_filename(self, filename):
+        """
+        Parse method filename - improved to handle various patterns
+        """
+        basename = os.path.splitext(filename)[0].lower()
+        
+        # Try multiple patterns
+        patterns = [
+            # Pattern for: dynamical_20241027_0000.png, stability_20241027_0000.png, etc.
+            r'[a-z]+_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})',
+            # Pattern for: 20241027_0000.png (without method prefix)
+            r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})',
+            # Pattern for: dynamical_241027_0000.png (short year)
+            r'[a-z]+_(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})',
+        ]
+        
+        for pattern in patterns:
+            match = re.match(pattern, basename)
+            if match:
+                if len(match.group(1)) == 4:  # YYYY format (2024)
+                    year = match.group(1)
+                    month = match.group(2)
+                    day = match.group(3)
+                    hour = match.group(4)
+                    minute = match.group(5)
+                    return f"{year}{month}{day}_{hour}{minute}"
+                else:  # YY format (24), assume 2024
+                    year = "20" + match.group(1)
+                    month = match.group(2)
+                    day = match.group(3)
+                    hour = match.group(4)
+                    minute = match.group(5)
+                    return f"{year}{month}{day}_{hour}{minute}"
+        
+        # If no pattern matches, try to extract date from filename using simpler approach
+        # Look for YYYYMMDD_HHMM pattern anywhere in the filename
+        simple_pattern = r'(\d{8})_(\d{4})'
+        simple_match = re.search(simple_pattern, basename)
+        if simple_match:
+            return f"{simple_match.group(1)}_{simple_match.group(2)}"
+        
+        return None
+
+    def debug_method_files(self, method_dir, method_name):
+        """
+        Debug method to see what files are available and how they're parsed
+        """
+        print(f"\nDebugging {method_name} directory: {method_dir}")
+        files = [f for f in os.listdir(method_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif'))]
+        print(f"Found {len(files)} files")
+        
+        for i, f in enumerate(files[:10]):  # Show first 10 files
+            timestamp = self.parse_method_filename(f)
+            print(f"  {f} -> {timestamp}")
+        if len(files) > 10:
+            print(f"  ... and {len(files) - 10} more files")
+
+    def load_and_preprocess_images(self, wv_path, method_path):
+        try:
+            wv_img = mpimg.imread(wv_path)
+            method_img = mpimg.imread(method_path)
+
+            # Remove alpha if present
+            if wv_img.ndim == 3 and wv_img.shape[-1] == 4:
+                wv_img = wv_img[:, :, :3]
+            if method_img.ndim == 3 and method_img.shape[-1] == 4:
+                method_img = method_img[:, :, :3]
+
+            # Convert to grayscale
+            if wv_img.ndim == 3:
+                wv_img = color.rgb2gray(wv_img)
+            if method_img.ndim == 3:
+                method_img = color.rgb2gray(method_img)
+
+            # Resize method to WV shape
+            method_img = transform.resize(method_img, wv_img.shape, anti_aliasing=True)
+
+            # Normalize 0–1
+            wv_img = (wv_img - np.min(wv_img)) / (np.max(wv_img) - np.min(wv_img))
+            method_img = (method_img - np.min(method_img)) / (np.max(method_img) - np.min(method_img))
+
+            return wv_img, method_img
+        except Exception as e:
+            print(f"Error loading images: {e}")
+            return None, None
+
+    def calculate_similarity_metrics(self, img1, img2):
+        metrics_dict = {}
+        try:
+            # Ensure we have valid images
+            if img1 is None or img2 is None:
+                raise ValueError("One or both images are None")
+                
+            # Check if images are constant (which would cause correlation issues)
+            if np.std(img1) == 0 or np.std(img2) == 0:
+                metrics_dict['ssim'] = 0.0
+                metrics_dict['mse'] = 1.0
+                metrics_dict['ncc'] = 0.0
+            else:
+                metrics_dict['ssim'] = float(metrics.structural_similarity(img1, img2, data_range=1.0))
+                metrics_dict['mse'] = float(metrics.mean_squared_error(img1, img2))
+                
+                # Calculate NCC safely
+                corr_matrix = np.corrcoef(img1.flatten(), img2.flatten())
+                if np.isnan(corr_matrix[0, 1]):
+                    metrics_dict['ncc'] = 0.0
+                else:
+                    metrics_dict['ncc'] = float(corr_matrix[0, 1])
+                    
+        except Exception as e:
+            print(f"Error calculating metrics: {e}")
+            metrics_dict['ssim'] = 0.0
+            metrics_dict['mse'] = 1.0
+            metrics_dict['ncc'] = 0.0
+            
+        return metrics_dict
+
+    def create_comparison_figure(self, wv_img, method_imgs, method_names, metrics_list, timestamp):
+        n_methods = len(method_names)
+        fig, axes = plt.subplots(2, n_methods + 1, figsize=(20, 10))
+
+        # WV reference
+        axes[0, 0].imshow(wv_img, cmap='viridis')
+        axes[0, 0].set_title('Water Vapor 6.2μm\n' + timestamp, fontsize=12)
+        axes[0, 0].axis('off')
+
+        # Loop over methods
+        for i, (method_img, method_name, metrics) in enumerate(zip(method_imgs, method_names, metrics_list), 1):
+            if method_img.shape != wv_img.shape:
+                method_img = transform.resize(method_img, wv_img.shape, anti_aliasing=True)
+
+            axes[0, i].imshow(method_img, cmap='viridis')
+            axes[0, i].set_title(f'{method_name}\nSSIM: {metrics["ssim"]:.3f}', fontsize=12)
+            axes[0, i].axis('off')
+
+            diff = np.abs(wv_img - method_img)
+            im = axes[1, i].imshow(diff, cmap='hot', vmin=0, vmax=1)
+            axes[1, i].set_title(f'Difference\nMSE: {metrics["mse"]:.3f}', fontsize=12)
+            axes[1, i].axis('off')
+
+        # Horizontal colorbar
+        cbar_ax = fig.add_axes([0.25, 0.05, 0.5, 0.03])
+        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label("Difference (0 to 1)", fontsize=10)
+
+        # Metrics table
+        table_data = []
+        for metrics in metrics_list:
+            table_data.append([f"{metrics['ssim']:.3f}", f"{metrics['mse']:.3f}", f"{metrics['ncc']:.3f}"])
+
+        axes[1, 0].axis('off')
+        table = axes[1, 0].table(cellText=table_data,
+                                rowLabels=method_names,
+                                colLabels=['SSIM', 'MSE', 'NCC'],
+                                loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 2)
+        axes[1, 0].set_title('Similarity Metrics', fontsize=12)
+
+        plt.tight_layout(rect=[0, 0.08, 1, 1])
+        return fig
+
+    def process_all_images(self):
+        # First, debug all method directories to see what files are available
+        print("\nDebugging method directories:")
+        for method_dir, method_name in zip(self.method_dirs, self.method_names):
+            self.debug_method_files(method_dir, method_name)
+        
+        all_results = {}
+        processed_count = 0
+
+        for wv_file in self.wv_files:
+            wv_timestamp = self.parse_wv_filename(wv_file)
+            if not wv_timestamp:
+                print(f"Skipping {wv_file}, could not parse timestamp")
+                continue
+
+            wv_path = os.path.join(self.wv_dir, wv_file)
+            method_imgs, method_names, metrics_list = [], [], []
+
+            # Match against method directories
+            for method_dir, method_name in zip(self.method_dirs, self.method_names):
+                candidates = [f for f in os.listdir(method_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif'))]
+                matched = None
+                for f in candidates:
+                    if self.parse_method_filename(f) == wv_timestamp:
+                        matched = f
+                        break
+
+                if matched:
+                    method_path = os.path.join(method_dir, matched)
+                    wv_img, method_img = self.load_and_preprocess_images(wv_path, method_path)
+                    if wv_img is None or method_img is None:
+                        continue
+                    method_imgs.append(method_img)
+                    method_names.append(method_name)
+                    metrics = self.calculate_similarity_metrics(wv_img, method_img)
+                    metrics_list.append(metrics)
+                    print(f"Matched {wv_file} with {matched} in {method_name}")
+                else:
+                    print(f"No match for {wv_file} in {method_name}")
+
+            if not method_imgs:
+                continue
+
+            fig = self.create_comparison_figure(wv_img, method_imgs, method_names, metrics_list, wv_timestamp)
+            fig.savefig(os.path.join(self.output_dir, f'comparison_{wv_timestamp}.png'), dpi=150, bbox_inches='tight')
+            plt.close(fig)
+
+            all_results[wv_timestamp] = {'methods': method_names, 'metrics': metrics_list}
+            processed_count += 1
+            print(f"Processed {wv_file}")
+
+        print(f"Processed {processed_count} images")
+        return all_results
+
+    def generate_comprehensive_report(self, all_results):
+        """
+        Generate comprehensive report with all metrics, statistics, and visualizations
+        """
+        if not all_results:
+            print("No results to generate report")
+            return None, None
+        
+        # Create data structure for all results
+        all_data = []
+        for timestamp, results in all_results.items():
+            for method_name, metrics in zip(results['methods'], results['metrics']):
+                all_data.append({
+                    'timestamp': timestamp,
+                    'method': method_name,
+                    'ssim': float(metrics['ssim']),
+                    'mse': float(metrics['mse']),
+                    'ncc': float(metrics['ncc'])
+                })
+        
+        # 1. Print comprehensive table of all metrics
+        print("=" * 80)
+        print("COMPREHENSIVE METRICS REPORT")
+        print("=" * 80)
+        print("\nDetailed Metrics for All Methods and Timestamps:")
+        print("-" * 80)
+        
+        # Group by timestamp
+        timestamps = sorted(set(item['timestamp'] for item in all_data))
+        for timestamp in timestamps:
+            print(f"\nTimestamp: {timestamp}")
+            print("-" * 40)
+            timestamp_data = [item for item in all_data if item['timestamp'] == timestamp]
+            for item in timestamp_data:
+                print(f"{item['method']:20} SSIM: {item['ssim']:.4f}  MSE: {item['mse']:.4f}  NCC: {item['ncc']:.4f}")
+        
+        # 2. Print summary statistics
+        print("\n" + "=" * 80)
+        print("SUMMARY STATISTICS")
+        print("=" * 80)
+        
+        # Calculate statistics manually
+        methods = sorted(set(item['method'] for item in all_data))
+        summary_data = []
+        
+        for method in methods:
+            method_data = [item for item in all_data if item['method'] == method]
+            ssim_values = [item['ssim'] for item in method_data]
+            mse_values = [item['mse'] for item in method_data]
+            ncc_values = [item['ncc'] for item in method_data]
+            
+            ssim_mean = np.mean(ssim_values)
+            ssim_std = np.std(ssim_values)
+            ssim_min = np.min(ssim_values)
+            ssim_max = np.max(ssim_values)
+            ssim_count = len(ssim_values)
+            
+            mse_mean = np.mean(mse_values)
+            mse_std = np.std(mse_values)
+            mse_min = np.min(mse_values)
+            mse_max = np.max(mse_values)
+            
+            ncc_mean = np.mean(ncc_values)
+            ncc_std = np.std(ncc_values)
+            ncc_min = np.min(ncc_values)
+            ncc_max = np.max(ncc_values)
+            
+            summary_data.append({
+                'method': method,
+                'ssim_mean': ssim_mean, 'ssim_std': ssim_std, 'ssim_min': ssim_min, 'ssim_max': ssim_max, 'ssim_count': ssim_count,
+                'mse_mean': mse_mean, 'mse_std': mse_std, 'mse_min': mse_min, 'mse_max': mse_max,
+                'ncc_mean': ncc_mean, 'ncc_std': ncc_std, 'ncc_min': ncc_min, 'ncc_max': ncc_max
+            })
+            
+        print("\nSSIM Statistics:")
+        print("-" * 40)
+        for stats in summary_data:
+            print(f"{stats['method']:20} Mean: {stats['ssim_mean']:.4f} ± {stats['ssim_std']:.4f} "
+                  f"(Range: {stats['ssim_min']:.4f}-{stats['ssim_max']:.4f}, "
+                  f"N={stats['ssim_count']})")
+        
+        print("\nMSE Statistics:")
+        print("-" * 40)
+        for stats in summary_data:
+            print(f"{stats['method']:20} Mean: {stats['mse_mean']:.4f} ± {stats['mse_std']:.4f} "
+                  f"(Range: {stats['mse_min']:.4f}-{stats['mse_max']:.4f})")
+        
+        print("\nNCC Statistics:")
+        print("-" * 40)
+        for stats in summary_data:
+            print(f"{stats['method']:20} Mean: {stats['ncc_mean']:.4f} ± {stats['ncc_std']:.4f} "
+                  f"(Range: {stats['ncc_min']:.4f}-{stats['ncc_max']:.4f})")
+        
+        # 3. Create comprehensive visualizations
+        self.create_comprehensive_visualizations(all_data, methods)
+        
+        # 4. Save detailed CSV report
+        csv_path = os.path.join(self.output_dir, 'detailed_metrics_report.csv')
+        pd.DataFrame(all_data).to_csv(csv_path, index=False)
+        print(f"\nDetailed metrics saved to: {csv_path}")
+        
+        # 5. Save summary report to text file
+        self.save_summary_report(all_data, summary_data)
+        
+        return all_data, summary_data
+
+    def create_comprehensive_visualizations(self, all_data, methods):
+        """Create comprehensive visualizations for the report"""
+        # Set up the figure
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # 1. Boxplot for SSIM
+        ssim_data = []
+        for method in methods:
+            method_ssim = [item['ssim'] for item in all_data if item['method'] == method]
+            ssim_data.append(method_ssim)
+        
+        axes[0, 0].boxplot(ssim_data, tick_labels=methods)
+        axes[0, 0].set_title('Structural Similarity Index (SSIM) Comparison', fontsize=14, fontweight='bold')
+        axes[0, 0].set_ylabel('SSIM Score', fontsize=12)
+        axes[0, 0].grid(True, alpha=0.3)
+        plt.setp(axes[0, 0].xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # 2. Boxplot for MSE
+        mse_data = []
+        for method in methods:
+            method_mse = [item['mse'] for item in all_data if item['method'] == method]
+            mse_data.append(method_mse)
+        
+        axes[0, 1].boxplot(mse_data, tick_labels=methods)
+        axes[0, 1].set_title('Mean Squared Error (MSE) Comparison', fontsize=14, fontweight='bold')
+        axes[0, 1].set_ylabel('MSE', fontsize=12)
+        axes[0, 1].grid(True, alpha=0.3)
+        plt.setp(axes[0, 1].xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # 3. Boxplot for NCC
+        ncc_data = []
+        for method in methods:
+            method_ncc = [item['ncc'] for item in all_data if item['method'] == method]
+            ncc_data.append(method_ncc)
+        
+        axes[1, 0].boxplot(ncc_data, tick_labels=methods)
+        axes[1, 0].set_title('Normalized Cross-Correlation (NCC) Comparison', fontsize=14, fontweight='bold')
+        axes[1, 0].set_ylabel('NCC', fontsize=12)
+        axes[1, 0].grid(True, alpha=0.3)
+        plt.setp(axes[1, 0].xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # 4. Temporal evolution of SSIM
+        for method in methods:
+            method_data = [item for item in all_data if item['method'] == method]
+            if method_data:
+                # Convert timestamp to datetime for plotting
+                timestamps = [datetime.strptime(item['timestamp'], "%Y%m%d_%H%M") for item in method_data]
+                ssim_values = [item['ssim'] for item in method_data]
+                axes[1, 1].plot(timestamps, ssim_values, 'o-', label=method, markersize=4)
+        
+        axes[1, 1].set_title('Temporal Evolution of SSIM Scores', fontsize=14, fontweight='bold')
+        axes[1, 1].set_ylabel('SSIM Score', fontsize=12)
+        axes[1, 1].set_xlabel('Time', fontsize=12)
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
+        plt.setp(axes[1, 1].xaxis.get_majorticklabels(), rotation=45)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'comprehensive_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create ranking visualization
+        self.create_ranking_visualization(all_data, methods)
+
+    def create_ranking_visualization(self, all_data, methods):
+        """Create method ranking visualization"""
+        # Calculate average metrics manually
+        avg_metrics = {}
+        for method in methods:
+            method_data = [item for item in all_data if item['method'] == method]
+            avg_metrics[method] = {
+                'ssim': np.mean([item['ssim'] for item in method_data]),
+                'mse': np.mean([item['mse'] for item in method_data]),
+                'ncc': np.mean([item['ncc'] for item in method_data])
+            }
+        
+        # Rank methods (higher SSIM/NCC and lower MSE are better)
+        ssim_ranks = {method: rank for rank, method in 
+                     enumerate(sorted(methods, key=lambda x: avg_metrics[x]['ssim'], reverse=True), 1)}
+        mse_ranks = {method: rank for rank, method in 
+                    enumerate(sorted(methods, key=lambda x: avg_metrics[x]['mse']), 1)}
+        ncc_ranks = {method: rank for rank, method in 
+                    enumerate(sorted(methods, key=lambda x: avg_metrics[x]['ncc'], reverse=True), 1)}
+        
+        # Calculate overall rank
+        overall_ranks = {}
+        for method in methods:
+            overall_ranks[method] = (ssim_ranks[method] + mse_ranks[method] + ncc_ranks[method]) / 3
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        sorted_methods = sorted(methods, key=lambda x: overall_ranks[x])
+        y_pos = np.arange(len(sorted_methods))
+        rank_values = [overall_ranks[method] for method in sorted_methods]
+        
+        bars = ax.barh(y_pos, rank_values, align='center')
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(sorted_methods)
+        ax.invert_yaxis()  # highest rank at top
+        ax.set_xlabel('Overall Ranking (Lower is Better)')
+        ax.set_title('Overall Method Ranking Based on SSIM, MSE, and NCC', fontsize=14, fontweight='bold')
+        
+        # Add value labels
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            method = sorted_methods[i]
+            ax.text(width + 0.1, bar.get_y() + bar.get_height()/2, 
+                   f'Rank: {width:.2f}\nSSIM: {avg_metrics[method]["ssim"]:.3f}\nMSE: {avg_metrics[method]["mse"]:.3f}\nNCC: {avg_metrics[method]["ncc"]:.3f}',
+                   ha='left', va='center', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.output_dir, 'method_ranking.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def save_summary_report(self, all_data, summary_data):
+        """Save comprehensive summary report to text file"""
+        report_path = os.path.join(self.output_dir, 'comprehensive_summary_report.txt')
+        
+        with open(report_path, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("COMPREHENSIVE TROPOPAUSE DETECTION METHOD COMPARISON REPORT\n")
+            f.write("=" * 80 + "\n\n")
+            
+            f.write("Report Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+            f.write(f"Total Comparisons: {len(all_data)}\n")
+            f.write(f"Unique Timestamps: {len(set(item['timestamp'] for item in all_data))}\n")
+            f.write(f"Methods Compared: {', '.join(set(item['method'] for item in all_data))}\n\n")
+            
+            f.write("SUMMARY STATISTICS\n")
+            f.write("=" * 80 + "\n\n")
+            
+            # SSIM Statistics
+            f.write("SSIM (Structural Similarity Index) - Higher is better (Max: 1.0)\n")
+            f.write("-" * 60 + "\n")
+            for stats in summary_data:
+                f.write(f"{stats['method']:20} Mean: {stats['ssim_mean']:.4f} ± {stats['ssim_std']:.4f} "
+                       f"(Range: {stats['ssim_min']:.4f}-{stats['ssim_max']:.4f}, "
+                       f"N={stats['ssim_count']})\n")
+            f.write("\n")
+            
+            # MSE Statistics
+            f.write("MSE (Mean Squared Error) - Lower is better (Min: 0.0)\n")
+            f.write("-" * 60 + "\n")
+            for stats in summary_data:
+                f.write(f"{stats['method']:20} Mean: {stats['mse_mean']:.4f} ± {stats['mse_std']:.4f} "
+                       f"(Range: {stats['mse_min']:.4f}-{stats['mse_max']:.4f})\n")
+            f.write("\n")
+            
+            # NCC Statistics
+            f.write("NCC (Normalized Cross-Correlation) - Higher is better (Max: 1.0)\n")
+            f.write("-" * 60 + "\n")
+            for stats in summary_data:
+                f.write(f"{stats['method']:20} Mean: {stats['ncc_mean']:.4f} ± {stats['ncc_std']:.4f} "
+                       f"(Range: {stats['ncc_min']:.4f}-{stats['ncc_max']:.4f})\n")
+            f.write("\n")
+            
+            # Detailed results
+            f.write("DETAILED RESULTS BY TIMESTAMP\n")
+            f.write("=" * 80 + "\n\n")
+            
+            # Group by timestamp
+            timestamps = sorted(set(item['timestamp'] for item in all_data))
+            for timestamp in timestamps:
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write("-" * 40 + "\n")
+                timestamp_data = [item for item in all_data if item['timestamp'] == timestamp]
+                for item in timestamp_data:
+                    f.write(f"{item['method']:20} SSIM: {item['ssim']:.4f}  MSE: {item['mse']:.4f}  NCC: {item['ncc']:.4f}\n")
+                f.write("\n")
+            
+            f.write("CONCLUSIONS\n")
+            f.write("=" * 80 + "\n")
+            f.write("Based on the comprehensive analysis:\n")
+            f.write("- SSIM measures structural similarity (higher values indicate better match)\n")
+            f.write("- MSE measures error (lower values indicate better match)\n") 
+            f.write("- NCC measures correlation (higher values indicate better match)\n")
+            f.write("- The best method should have high SSIM/NCC and low MSE values\n")
+        
+        print(f"Comprehensive report saved to: {report_path}")
+
+
+# -----------------------------
+# Example usage
+# -----------------------------
+if __name__ == "__main__":
+    wv_dir = r"C:/Users/moham/OneDrive/Documents/stage/water_vapor_images"
+    method_dirs = [
+        r"C:/Users/moham/OneDrive/Documents/stage/dynamical_method",
+        r"C:/Users/moham/OneDrive/Documents/stage/stability_method",
+        r"C:/Users/moham/OneDrive/Documents/stage/hygropause_method",
+        r"C:/Users/moham/OneDrive/Documents/stage/hybrid_method"
+    ]
+    method_names = ["Dynamical (1.5 PVU)", "Stability", "Hygropause", "Hybrid"]
+    output_dir = r"C:/Users/moham/OneDrive/Documents/stage/comparisons"
+
+    comparator = WV_TropopauseComparator(wv_dir, method_dirs, method_names, output_dir)
+    results = comparator.process_all_images()
+    
+    # Generate comprehensive report
+    if results:
+        all_data, summary_stats = comparator.generate_comprehensive_report(results)
+        print("\nReport generation completed!")
+        print(f"Check the output directory for comprehensive results: {output_dir}")
+        
+        # Print final summary
+        print("\n" + "=" * 80)
+        print("FINAL SUMMARY")
+        print("=" * 80)
+        for stats in summary_stats:
+            print(f"{stats['method']:20} | SSIM: {stats['ssim_mean']:.3f} | MSE: {stats['mse_mean']:.3f} | NCC: {stats['ncc_mean']:.3f}")
+    else:
+        print("No results were generated. Please check your input directories and file naming.")
