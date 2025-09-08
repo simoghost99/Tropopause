@@ -1,106 +1,141 @@
 # -*- coding: utf-8 -*-
 """
-Combined tropopause analysis with Hybrid and Thermal methods - CORRECTED
+Tropopause analysis (Hybrid + Thermal) with exact ECMWF troplev logic
 """
 
 import numpy as np
 import netCDF4 as nc
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-import os
-import time
+import os, time
 
 # -------------------------
 # Constants
 # -------------------------
-GRAVITY = 9.80665
 RD = 287.05
-CP = 1004.0
-RKAPPA = RD / CP
+RG = 9.80665
+RKAPPA = RD / 1004.0
+GRAVITY = 9.80665
 g = 9.81
 
-# -------------------------
-# Paths
-# -------------------------
-direcInput = "C:/Users/moham/OneDrive/Documents/stage"
-direcOutput = "C:/Users/moham/OneDrive/Documents/stage"
-nc_file = os.path.join(direcInput, "6d772be982907b488c8caefd91616826.nc")
+# =========================
+# troplev : EXACT ECMWF logic (1=stability, 2=humidity, 3=hybrid)
+# =========================
+def troplev(kflev, ktroptype, pt, pq, pp):
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
 
-os.makedirs(direcOutput, exist_ok=True)
+    for j in range(ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+            if ktroptype == 1:  # stability
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD * pt[j+1] * 2.5e-4 / (RG * RG)
+                if kltrop == ilevm2 and zstab > RKAPPA:
+                    kltrop = j
+
+            elif ktroptype == 2:  # humidity
+                if kltrop == ilevm2 and pq[j] > 3.0e-6:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA - pp[j]**RKAPPA)
+                    zb = pt[j] - za * pp[j]**RKAPPA
+                    ztm = 0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA))**(1.0 / RKAPPA)
+                    zp600m = zpm + 600.0 * RG * zpm / (RD * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA + pp[jj+1]**RKAPPA))**(1.0 / RKAPPA)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+
+            elif ktroptype == 3:  # hybrid
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD * pt[j+1] * 2.5e-4 / (RG * RG)
+                if kltrop == ilevm2 and pq[j] > 3.0e-6 and zstab > RKAPPA:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA - pp[j]**RKAPPA)
+                    zb = pt[j] - za * pp[j]**RKAPPA
+                    ztm = 0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA + pp[j]**RKAPPA))**(1.0 / RKAPPA)
+                    zp600m = zpm + 600.0 * RG * zpm / (RD * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA + pp[jj+1]**RKAPPA))**(1.0 / RKAPPA)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+        elif pp[j] > 5.0e4 and kltrop == ilevm2:
+            kltrop = j - 1
+
+    return kltrop
+
 
 # =========================
-# CORRECTED Hybrid tropopause detection
+# Order helper: top->bottom
 # =========================
-def find_hybrid_tropopause_corrected(temp_zm_tm, q_zm_tm, pp_pa):
+def order_top_to_bottom(pp_pa):
+    return np.argsort(pp_pa)  # ascending: 1hPa,...,1000hPa
+
+
+# =========================
+# Hybrid tropopause driver
+# =========================
+def find_hybrid_tropopause(temp, q, pp_pa):
+    nlev, nlat = temp.shape
+    idx_sorted = order_top_to_bottom(pp_pa)
+    pp_tb = pp_pa[idx_sorted]
+    temp_tb = temp[idx_sorted, :]
+    q_tb = q[idx_sorted, :]
+
+    pHybrid = np.full(nlat, np.nan)
+    for iy in range(nlat):
+        kflev = len(pp_tb)
+        k_hybrid = troplev(kflev, 3, temp_tb[:, iy], q_tb[:, iy], pp_tb)
+        if 0 <= k_hybrid < kflev:
+            pHybrid[iy] = pp_tb[k_hybrid]
+    return pHybrid
+
+
+# =========================
+# Hygropause detection
+# =========================
+def find_hygropause(q_zm, pp_pa):
     """
-    Corrected hybrid tropopause detection based on the reference implementation
+    Hygropause detection based on humidity thresholds
     """
-    nlev, nlat = temp_zm_tm.shape
+    nlev, nlat = q_zm.shape
     
     # Sort pressure levels (top to bottom)
     sort_idx = np.argsort(pp_pa)
     pp_tb = pp_pa[sort_idx]
-    temp_tb = temp_zm_tm[sort_idx, :]
-    q_tb = q_zm_tm[sort_idx, :]
+    q_tb = q_zm[sort_idx, :]
     
     # Initialize results
-    hybrid_pressures = np.full(nlat, np.nan)
-    
-    # Hybrid method constants
-    RD_loc = 287.05
-    RG_loc = 9.80665
-    RKAPPA_loc = 0.2854
+    hygropause_pressures = np.full(nlat, np.nan)
     
     # Find valid pressure range (70-500 hPa)
     valid_p_mask = (pp_tb >= 7000) & (pp_tb <= 50000)
     valid_indices = np.where(valid_p_mask)[0]
     
     for j in valid_indices:
-        if j < 2 or j > nlev-3:  # Need at least j+2 levels
+        if j < 2:
             continue
             
-        # Calculate stability criterion
-        zstab = pp_tb[j+1] * (temp_tb[j+2, :] - temp_tb[j, :]) / \
-                (temp_tb[j+1, :] * (pp_tb[j+2] - pp_tb[j])) + \
-                (RD_loc * temp_tb[j+1, :] * 2.5e-4 / (RG_loc * RG_loc))
-        
-        # Check initial conditions (hygropause + stability)
-        initial_mask = (q_tb[j, :] > 3.0e-6) & (zstab > RKAPPA_loc) & np.isnan(hybrid_pressures)
-        
-        if np.any(initial_mask):
-            # For latitudes that meet initial conditions, check +600m condition
-            for lat_idx in np.where(initial_mask)[0]:
-                # Calculate temperature profile parameters
-                za = (temp_tb[j+1, lat_idx] - temp_tb[j, lat_idx]) / \
-                     (pp_tb[j+1]**RKAPPA_loc - pp_tb[j]**RKAPPA_loc)
-                zb = temp_tb[j, lat_idx] - za * pp_tb[j]**RKAPPA_loc
-                
-                # Calculate mean temperature and pressure
-                ztm = 0.5 * (pp_tb[j+1]**RKAPPA_loc + pp_tb[j]**RKAPPA_loc) * za + zb
-                zpm = (0.5 * (pp_tb[j+1]**RKAPPA_loc + pp_tb[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
-                
-                # Calculate pressure at 600m above
-                zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
-                
-                # Find level where pressure exceeds zp600m
-                jj = j
-                while jj <= nlev-3 and (0.5 * (pp_tb[jj+2]**RKAPPA_loc + pp_tb[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc) <= zp600m:
-                    jj += 1
-                
-                # Check if humidity condition is met at the higher level
-                if jj < nlev and q_tb[min(jj, nlev-1), lat_idx] > 5.0e-6:
-                    hybrid_pressures[lat_idx] = pp_tb[j]
+        # Check humidity conditions for all latitudes at once
+        mask = (q_tb[j, :] > 3.0e-6) & (q_tb[j-2, :] > 5.0e-6) & np.isnan(hygropause_pressures)
+        hygropause_pressures[mask] = pp_tb[j]
     
-    return hybrid_pressures
+    return hygropause_pressures
+
 
 # =========================
 # Thermal tropopause detection
 # =========================
-def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
+def find_thermal_tropopause_corrected(temp_zm, z_height, pp_pa):
     """
     Corrected thermal tropopause detection with proper lapse rate calculation
     """
-    nlev, nlat = temp_zm_tm.shape
+    nlev, nlat = temp_zm.shape
     pTropopauseWMO = np.full(nlat, np.nan)
     
     # Skip levels below 500 hPa
@@ -110,11 +145,11 @@ def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
     # Calculate lapse rates correctly
     # Lapse rate = -dT/dz (temperature decrease with height)
     # We need to calculate between adjacent levels
-    lapse_rates = np.full_like(temp_zm_tm, np.nan)
+    lapse_rates = np.full_like(temp_zm, np.nan)
     
     for j in range(nlev - 1):
         dz = z_height[j + 1, :] - z_height[j, :]  # Height difference (km)
-        dT = temp_zm_tm[j + 1, :] - temp_zm_tm[j, :]  # Temperature difference (K)
+        dT = temp_zm[j + 1, :] - temp_zm[j, :]  # Temperature difference (K)
         
         # Avoid division by zero
         valid_dz = dz != 0
@@ -172,23 +207,24 @@ def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
     
     return pTropopauseWMO
 
+
 # =========================
 # Geopotential height calculation
 # =========================
-def calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa):
+def calculate_geopotential_height_vectorized(temp_zm, pp_pa):
     """
     Vectorized geopotential height calculation
     """
-    nlev, nlat = temp_zm_tm.shape
+    nlev, nlat = temp_zm.shape
     z_height = np.zeros((nlev, nlat))
     
     # Start from the top level
-    H = RD * temp_zm_tm[0, :] / g
+    H = RD * temp_zm[0, :] / g
     z_height[0, :] = -H * np.log(pp_pa[0] / 100000)
     
     # Vectorized integration downward
     for nlev_idx in range(1, nlev):
-        T_avg = (temp_zm_tm[nlev_idx-1, :] + temp_zm_tm[nlev_idx, :]) / 2
+        T_avg = (temp_zm[nlev_idx-1, :] + temp_zm[nlev_idx, :]) / 2
         dz = (RD * T_avg / g) * np.log(pp_pa[nlev_idx-1] / pp_pa[nlev_idx])
         z_height[nlev_idx, :] = z_height[nlev_idx-1, :] + dz
     
@@ -197,211 +233,147 @@ def calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa):
     
     return z_height
 
-# =========================
-# Optimized data processing
-# =========================
-def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_size=30):
-    """
-    Optimized variable processing with larger chunks for better performance
-    """
-    # Check which dimension name exists in the file
-    if 'valid_time' in dataset.dimensions:
-        ntime = dataset.dimensions['valid_time'].size
-    elif 'time' in dataset.dimensions:
-        ntime = dataset.dimensions['time'].size
-    else:
-        raise ValueError("No time dimension found in the dataset")
-        
-    nlat = dataset.dimensions['latitude'].size
-    nlev = dataset.dimensions['pressure_level'].size
-    
-    # Initialize array for zonal mean
-    var_zm_tm = np.zeros((nlev, nlat), dtype=np.float32)
-    
-    # Process data in time and latitude chunks
-    for time_i in range(0, ntime, time_chunk_size):
-        time_end = min(time_i + time_chunk_size, ntime)
-        
-        for lat_i in range(0, nlat, lat_chunk_size):
-            lat_end = min(lat_i + lat_chunk_size, nlat)
-            
-            try:
-                # Read chunk of data
-                var_chunk = dataset.variables[var_name][time_i:time_end, :, lat_i:lat_end, :]
-                
-                # Calculate zonal mean for this chunk
-                var_zm_chunk = np.mean(var_chunk, axis=(0, 3))
-                
-                # Accumulate results with proper weighting
-                chunk_weight = (time_end - time_i) / ntime
-                var_zm_tm[:, lat_i:lat_end] += var_zm_chunk * chunk_weight
-                
-            except Exception as e:
-                print(f"Error processing {var_name}: {e}")
-                continue
-    
-    return var_zm_tm
 
 # =========================
-# Main - HYBRID AND THERMAL ONLY
+# Main
 # =========================
 if __name__ == "__main__":
-    start_time = time.time()
-    
-    print("Opening NetCDF:", nc_file)
-    try:
-        with nc.Dataset(nc_file, mode='r') as f:
-            # Read basic dimensions
-            lat = f.variables["latitude"][:]
-            plev_hpa = f.variables["pressure_level"][:]
-            pp_pa = plev_hpa * 100.0
-            
-            print("Reading and processing data with optimized chunks...")
-            
-            # Process variables with optimized chunk sizes
-            print("Processing u variable...")
-            u_zm_tm = process_variable_optimized(f, "u", time_chunk_size=5, lat_chunk_size=30)
-            
-            print("Processing t variable...")
-            temp_zm_tm = process_variable_optimized(f, "t", time_chunk_size=5, lat_chunk_size=30)
-            
-            print("Processing q variable...")
-            try:
-                q_zm_tm = process_variable_optimized(f, "q", time_chunk_size=5, lat_chunk_size=30)
-            except:
-                print("Warning: Could not process q variable, using zeros")
-                q_zm_tm = np.zeros_like(u_zm_tm)
-            
-            nlev_len, ny_len = temp_zm_tm.shape
-            
-            # Calculate geopotential height for thermal tropopause
-            print("Calculating geopotential height...")
-            z_height = calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa)
-            
-            print("Calculating tropopause using different methods...")
-            
-            # Calculate hybrid and thermal tropopause
-            pHybrid = find_hybrid_tropopause_corrected(temp_zm_tm, q_zm_tm, pp_pa)
-            pThermal = find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa)
-            
-            hybrid_valid = np.sum(~np.isnan(pHybrid))
-            thermal_valid = np.sum(~np.isnan(pThermal))
-            print(f"Hybrid tropopause found at {hybrid_valid} of {ny_len} latitudes")
-            print(f"Thermal tropopause found at {thermal_valid} of {ny_len} latitudes")
-            
-            # Prepare for plotting
-            paxis = np.log10(pp_pa / 100)  # log10 of pressure in hPa
-            ptop = 0.8  # log10(10 hPa)
-            pbot = 3.0  # log10(1000 hPa)
-            
-            print("Creating plot...")
-            
-            # ---------- PLOT ----------
-            plt.figure(figsize=(12, 7))
-            plt.axis([lat[-1], lat[0] + 0.1, pbot, ptop])
-            
-            # Create legend
-            legend_elements = [
-                Line2D([0], [0], marker='^', color='green', lw=0, label='Hybrid Tropopause',
-                       markersize=8, markeredgewidth=2),
-                Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause',
-                       markersize=8, markeredgewidth=2)
-            ]
-            plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.8, facecolor='white')
-            
-            # Plot zonal wind contours
-            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=1, levels=[5,10,15,25,30,35,45,50,55,65,70,75], 
-                             linestyles='solid', colors='black')
-            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=4, levels=[20,40,60,80], 
-                             linestyles='solid', colors='black')
-            plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
-            
-            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=1, levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], 
-                             linestyles='dashed', colors='black')
-            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=2, levels=[-60,-40,-20], 
-                             linestyles='dashed', colors='black')
-            plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
-            
-            # Plot temperature contours
-            temp_c = temp_zm_tm - 273.16
-            CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[10,20,30,40], 
-                             linestyles='solid', colors='red')
-            CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[0], 
-                             linestyles='dashed', colors='c')
-            plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
-            
-            CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[-70,-50,-40,-30,-20,-10], 
-                             linestyles='solid', colors='blue')
-            CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[-80,-60], 
-                             linestyles='solid', colors='blue')
-            plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
-            
-            # Fill temperature regions
-            plt.contourf(lat, paxis, temp_c, levels=[-120,-80.1], colors='mediumorchid', alpha=0.7) 
-            plt.contourf(lat, paxis, temp_c, levels=[-79.9,-60], colors='lightskyblue', alpha=0.7) 
-            plt.contourf(lat, paxis, temp_c, levels=[10,60], colors='lightsalmon', alpha=0.7)  
-            plt.contourf(lat, paxis, temp_c, levels=[-60,0], colors='lightcyan', alpha=0.7) 
-            
-            # Plot all tropopause types
-            valid_lat_mask = np.abs(lat) < 88.0
-            
-            # Hybrid tropopause
-            hybrid_mask = valid_lat_mask & ~np.isnan(pHybrid)
-            plt.plot(lat[hybrid_mask], np.log10(pHybrid[hybrid_mask]/100), "^", 
-                     markersize=6, color='green', alpha=0.8)
-            
-            # Thermal tropopause
-            thermal_mask = valid_lat_mask & ~np.isnan(pThermal)
-            plt.plot(lat[thermal_mask], np.log10(pThermal[thermal_mask]/100), "o", 
-                     markersize=6, color='red', alpha=0.8)
-            
-            # Final plot formatting
-            plt.xticks(np.arange(lat[-1], lat[0] + 0.1, 15), fontsize=15)
-            plt.yticks(np.arange(pbot, ptop, -1), fontsize=15)
-            
-            ax = plt.gca()
-            ax.axes.yaxis.set_ticklabels([])
-            
-            # Add pressure labels
-            pressure_labels = [
-                (3, "1000", lat[-1]-14),
-                (2.02, "100", lat[-1]-11),
-                (1.02, "10", lat[-1]-8),
-                (2.497, "300", lat[-1]-11),
-                (1.497, "30", lat[-1]-8),
-                (2.72, "500", lat[-1]-11),
-                (1.72, "50", lat[-1]-8),
-                (2.32, "200", lat[-1]-11),
-                (1.32, "20", lat[-1]-8)
-            ]
-            
-            for y, text, x_pos in pressure_labels:
-                plt.text(x_pos, y, text, fontsize=15)
-            
-            # Title and labels
-            plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
-                      'Hybrid (green), Thermal (red)', 
-                      fontsize=10)
-            
-            plt.text(80, 3.20, "ERA5", fontsize=8)
-            plt.text(80, 3.25, "Tropopause Analysis", fontsize=8)
-            
-            plt.xlabel('latitude [degrees north]', fontsize=16)
-            plt.text(lat[-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
-            
-            # Save and show
-            outfile = os.path.join(direcOutput, "tropopause_hybrid_thermal_comparison.png")
-            plt.savefig(outfile, dpi=300, bbox_inches='tight')
-            plt.show()
-            plt.close()
-            
-            elapsed_time = time.time() - start_time
-            print(f"Saved: {outfile}")
-            print(f"Execution time: {elapsed_time:.2f} seconds")
+    direcInput = "C:/Users/moham/OneDrive/Documents/stage"
+    nc_file = os.path.join(direcInput, "6d772be982907b488c8caefd91616826.nc")
 
-    except Exception as e:
-        print(f"Error opening or processing file: {e}")
-        import traceback
-        traceback.print_exc()
+    with nc.Dataset(nc_file) as f:
+        lat = f.variables["latitude"][:]
+        plev_hpa = f.variables["pressure_level"][:]
+        pp_pa = plev_hpa * 100
+        
+        # Read all variables needed
+        temp = f.variables["t"][:]  # (time, level, lat, lon)
+        q = f.variables["q"][:]
+        u = f.variables["u"][:]  # zonal wind
+        
+        # time/longitude average
+        temp_zm = np.mean(temp, axis=(0,3))  # (level, lat)
+        q_zm = np.mean(q, axis=(0,3))        # (level, lat)
+        u_zm = np.mean(u, axis=(0,3))        # (level, lat)
 
-    print("Processing completed.")
+        print("Calculating hybrid tropopause...")
+        pHybrid = find_hybrid_tropopause(temp_zm, q_zm, pp_pa)
+        print("Hybrid tropopause valid:", np.sum(~np.isnan(pHybrid)), "of", len(lat))
+        
+        print("Calculating hygropause...")
+        pHygropause = find_hygropause(q_zm, pp_pa)
+        print("Hygropause valid:", np.sum(~np.isnan(pHygropause)), "of", len(lat))
+        
+        print("Calculating geopotential height...")
+        z_height = calculate_geopotential_height_vectorized(temp_zm, pp_pa)
+        
+        print("Calculating thermal tropopause...")
+        pThermal = find_thermal_tropopause_corrected(temp_zm, z_height, pp_pa)
+        print("Thermal tropopause valid:", np.sum(~np.isnan(pThermal)), "of", len(lat))
+
+        # Prepare for plotting
+        paxis = np.log10(pp_pa / 100)  # log10 of pressure in hPa
+        ptop = 0.8  # log10(10 hPa)
+        pbot = 3.0  # log10(1000 hPa)
+        
+        # --- Aarnout van Delden style plot ---
+        plt.figure(figsize=(12,7))
+        plt.axis([lat[-1], lat[0]+0.1, pbot, ptop])
+
+        # Create legend
+        legend_elements = [
+            Line2D([0], [0], marker='^', color='green', lw=0, label='Hybrid tropopause',
+                   markersize=8, markeredgewidth=2),
+            
+            Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause',
+                   markersize=8, markeredgewidth=2)
+        ]
+        plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.8, facecolor='white')
+        
+        # Plot zonal wind contours
+        CS = plt.contour(lat, paxis, u_zm, linewidths=1, levels=[5,10,15,25,30,35,45,50,55,65,70,75], 
+                         linestyles='solid', colors='black')
+        CS = plt.contour(lat, paxis, u_zm, linewidths=4, levels=[20,40,60,80], 
+                         linestyles='solid', colors='black')
+        plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+        
+        CS = plt.contour(lat, paxis, u_zm, linewidths=1, levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], 
+                         linestyles='dashed', colors='black')
+        CS = plt.contour(lat, paxis, u_zm, linewidths=2, levels=[-60,-40,-20], 
+                         linestyles='dashed', colors='black')
+        plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+        
+        # Plot temperature contours
+        temp_c = temp_zm - 273.16
+        CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[10,20,30,40], 
+                         linestyles='solid', colors='red')
+        CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[0], 
+                         linestyles='dashed', colors='c')
+        plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+        
+        CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[-70,-50,-40,-30,-20,-10], 
+                         linestyles='solid', colors='blue')
+        CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[-80,-60], 
+                         linestyles='solid', colors='blue')
+        plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+        
+        # Fill temperature regions
+        plt.contourf(lat, paxis, temp_c, levels=[-120,-80.1], colors='mediumorchid', alpha=0.7) 
+        plt.contourf(lat, paxis, temp_c, levels=[-79.9,-60], colors='lightskyblue', alpha=0.7) 
+        plt.contourf(lat, paxis, temp_c, levels=[10,60], colors='lightsalmon', alpha=0.7)  
+        plt.contourf(lat, paxis, temp_c, levels=[-60,0], colors='lightcyan', alpha=0.7) 
+        
+        # Plot all tropopause types
+        valid_lat_mask = np.abs(lat) < 88.0
+        
+        # Hybrid tropopause
+        hybrid_mask = valid_lat_mask & ~np.isnan(pHybrid)
+        plt.plot(lat[hybrid_mask], np.log10(pHybrid[hybrid_mask]/100), "^", 
+                 markersize=6, color='green', alpha=0.8)
+        
+        
+        
+        # Thermal tropopause
+        thermal_mask = valid_lat_mask & ~np.isnan(pThermal)
+        plt.plot(lat[thermal_mask], np.log10(pThermal[thermal_mask]/100), "o", 
+                 markersize=6, color='red', alpha=0.8)
+        
+        # Final plot formatting
+        plt.xticks(np.arange(lat[-1], lat[0] + 0.1, 15), fontsize=15)
+        plt.yticks(np.arange(pbot, ptop, -1), fontsize=15)
+        
+        ax = plt.gca()
+        ax.axes.yaxis.set_ticklabels([])
+        
+        # Add pressure labels
+        pressure_labels = [
+            (3, "1000", lat[-1]-14),
+            (2.02, "100", lat[-1]-11),
+            (1.02, "10", lat[-1]-8),
+            (2.497, "300", lat[-1]-11),
+            (1.497, "30", lat[-1]-8),
+            (2.72, "500", lat[-1]-11),
+            (1.72, "50", lat[-1]-8),
+            (2.32, "200", lat[-1]-11),
+            (1.32, "20", lat[-1]-8)
+        ]
+        
+        for y, text, x_pos in pressure_labels:
+            plt.text(x_pos, y, text, fontsize=15)
+        
+
+
+
+        
+        # Title and labels
+        plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
+                  'Hybrid (green), Thermal (red)', 
+                  fontsize=10)
+        
+        plt.text(80, 3.20, "ERA5", fontsize=8)
+        plt.text(80, 3.25, "Tropopause Analysis", fontsize=8)
+        
+        plt.xlabel('latitude [degrees north]', fontsize=16)
+        plt.text(lat[-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
+        
+        plt.show()
