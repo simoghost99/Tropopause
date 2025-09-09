@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Combined tropopause analysis with Hygropause and Thermal methods
+Combined tropopause analysis with ECMWF troplev function
 """
 
 import numpy as np
@@ -29,38 +29,103 @@ nc_file = os.path.join(direcInput, "6d772be982907b488c8caefd91616826.nc")
 os.makedirs(direcOutput, exist_ok=True)
 
 # =========================
-# Hygropause detection
+# troplev : EXACT ECMWF logic (1,2,3)
 # =========================
-def find_hygropause(q_zm_tm, pp_pa):
+def troplev(kflev, ktroptype, pt, pq, pp):
+    """Determine tropopause level based on temperature, humidity, and pressure."""
+    RD_loc = 287.05
+    RG_loc = 9.80665
+    RKAPPA_loc = 0.2854
+
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
+
+    for j in range(ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+            if ktroptype == 1:  # Thermal tropopause
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+                if kltrop == ilevm2 and zstab > RKAPPA_loc:
+                    kltrop = j
+
+            elif ktroptype == 2:  # Hygropause
+                if kltrop == ilevm2 and pq[j] > 3.0e-6:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+
+            elif ktroptype == 3:  # Combined stability and humidity
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+                if kltrop == ilevm2 and pq[j] > 3.0e-6 and zstab > RKAPPA_loc:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+        elif pp[j] > 5.0e4 and kltrop == ilevm2:
+            kltrop = j - 1
+
+    return kltrop
+
+# =========================
+# Helper: order top->bottom
+# =========================
+def order_top_to_bottom(pp_pa):
+    return np.argsort(pp_pa)
+
+# =========================
+# Find tropopause using ECMWF troplev function
+# =========================
+def find_tropopause_ecmwf(temp_zm_tm, q_zm_tm, pp_pa, ktroptype):
     """
-    Hygropause detection based on humidity thresholds
+    Find tropopause using ECMWF troplev function for all latitudes
     """
-    nlev, nlat = q_zm_tm.shape
+    nlev, nlat = temp_zm_tm.shape
     
     # Sort pressure levels (top to bottom)
     sort_idx = np.argsort(pp_pa)
     pp_tb = pp_pa[sort_idx]
+    temp_tb = temp_zm_tm[sort_idx, :]
     q_tb = q_zm_tm[sort_idx, :]
     
     # Initialize results
-    hygropause_pressures = np.full(nlat, np.nan)
+    tropopause_pressures = np.full(nlat, np.nan)
     
-    # Find valid pressure range (70-500 hPa)
-    valid_p_mask = (pp_tb >= 7000) & (pp_tb <= 50000)
-    valid_indices = np.where(valid_p_mask)[0]
+    # Process each latitude
+    for lat_idx in range(nlat):
+        # Get temperature and humidity profiles for this latitude
+        pt_profile = temp_tb[:, lat_idx]
+        pq_profile = q_tb[:, lat_idx]
+        pp_profile = pp_tb
+        
+        # Find tropopause level using ECMWF algorithm
+        kltrop = troplev(nlev, ktroptype, pt_profile, pq_profile, pp_profile)
+        
+        # Check if valid tropopause was found
+        if kltrop < nlev - 2:  # Valid tropopause found
+            tropopause_pressures[lat_idx] = pp_profile[kltrop]
     
-    for j in valid_indices:
-        if j < 2:
-            continue
-            
-        # Check humidity conditions for all latitudes at once
-        mask = (q_tb[j, :] > 3.0e-6) & (q_tb[j-2, :] > 5.0e-6) & np.isnan(hygropause_pressures)
-        hygropause_pressures[mask] = pp_tb[j]
-    
-    return hygropause_pressures
+    return tropopause_pressures
 
 # =========================
-# Thermal tropopause detection
+# Thermal tropopause detection (WMO criterion)
 # =========================
 def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
     """
@@ -209,7 +274,7 @@ def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_s
     return var_zm_tm
 
 # =========================
-# Main - HYGROPAUSE AND THERMAL ONLY
+# Main - USING ECMWF TROPLEV FOR HYGROPAUSE
 # =========================
 if __name__ == "__main__":
     start_time = time.time()
@@ -246,14 +311,16 @@ if __name__ == "__main__":
             
             print("Calculating tropopause using different methods...")
             
-            # Calculate hygropause and thermal tropopause
-            pHygropause = find_hygropause(q_zm_tm, pp_pa)
+            # Calculate hygropause using ECMWF troplev (type 2)
+            pHygropause = find_tropopause_ecmwf(temp_zm_tm, q_zm_tm, pp_pa, ktroptype=2)
+            
+            # Calculate thermal tropopause using WMO method
             pThermal = find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa)
             
             hygro_valid = np.sum(~np.isnan(pHygropause))
             thermal_valid = np.sum(~np.isnan(pThermal))
-            print(f"Hygropause found at {hygro_valid} of {ny_len} latitudes")
-            print(f"Thermal tropopause found at {thermal_valid} of {ny_len} latitudes")
+            print(f"Hygropause (ECMWF) found at {hygro_valid} of {ny_len} latitudes")
+            print(f"Thermal tropopause (WMO) found at {thermal_valid} of {ny_len} latitudes")
             
             # Prepare for plotting
             paxis = np.log10(pp_pa / 100)  # log10 of pressure in hPa
@@ -268,9 +335,9 @@ if __name__ == "__main__":
             
             # Create legend
             legend_elements = [
-                Line2D([0], [0], marker='D', color='green', lw=0, label='Hygropause',
+                Line2D([0], [0], marker='D', color='green', lw=0, label='Hygropause (ECMWF)',
                        markersize=8, markeredgewidth=2),
-                Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause',
+                Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause (WMO)',
                        markersize=8, markeredgewidth=2)
             ]
             plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.8, facecolor='white')
@@ -311,12 +378,12 @@ if __name__ == "__main__":
             # Plot all tropopause types
             valid_lat_mask = np.abs(lat) < 88.0
             
-            # Hygropause
+            # Hygropause (ECMWF)
             hygro_mask = valid_lat_mask & ~np.isnan(pHygropause)
             plt.plot(lat[hygro_mask], np.log10(pHygropause[hygro_mask]/100), "D", 
                      markersize=6, color='green', alpha=0.8)
             
-            # Thermal tropopause
+            # Thermal tropopause (WMO)
             thermal_mask = valid_lat_mask & ~np.isnan(pThermal)
             plt.plot(lat[thermal_mask], np.log10(pThermal[thermal_mask]/100), "o", 
                      markersize=6, color='red', alpha=0.8)
@@ -346,7 +413,7 @@ if __name__ == "__main__":
             
             # Title and labels
             plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
-                      'Hygropause (green), Thermal (red)', 
+                      'Hygropause (ECMWF, green), Thermal (WMO, red)', 
                       fontsize=10)
             
             plt.text(80, 3.20, "ERA5", fontsize=8)
