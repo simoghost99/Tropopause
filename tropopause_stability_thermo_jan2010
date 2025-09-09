@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Optimized combined tropopause analysis with stability and thermal methods
+Tropopause analysis with ECMWF stability tropopause and WMO thermal tropopause
 """
 
 import numpy as np
@@ -29,11 +29,67 @@ nc_file = os.path.join(direcInput, "6d772be982907b488c8caefd91616826.nc")
 os.makedirs(direcOutput, exist_ok=True)
 
 # =========================
-# Vectorized stability tropopause detection
+# troplev : EXACT ECMWF logic (1,2,3)
 # =========================
-def find_tropopause_stability(temp_zm_tm, pp_pa):
+def troplev(kflev, ktroptype, pt, pq, pp):
+    """Determine tropopause level based on temperature, humidity, and pressure."""
+    RD_loc = 287.05
+    RG_loc = 9.80665
+    RKAPPA_loc = 0.2854
+
+    ilevm2 = kflev - 2
+    kltrop = ilevm2
+
+    for j in range(ilevm2):
+        if 7.0e3 <= pp[j] <= 5.0e4:
+            if ktroptype == 1:  # Thermal tropopause
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+                if kltrop == ilevm2 and zstab > RKAPPA_loc:
+                    kltrop = j
+
+            elif ktroptype == 2:  # Hygropause
+                if kltrop == ilevm2 and pq[j] > 3.0e-6:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+
+            elif ktroptype == 3:  # Combined stability and humidity
+                zstab = pp[j+1] * (pt[j+2] - pt[j]) / \
+                        (pt[j+1] * (pp[j+2] - pp[j])) + \
+                        RD_loc * pt[j+1] * 2.5e-4 / (RG_loc * RG_loc)
+                if kltrop == ilevm2 and pq[j] > 3.0e-6 and zstab > RKAPPA_loc:
+                    za = (pt[j+1] - pt[j]) / (pp[j+1]**RKAPPA_loc - pp[j]**RKAPPA_loc)
+                    zb = pt[j] - za * pp[j]**RKAPPA_loc
+                    ztm = 0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc) * za + zb
+                    zpm = (0.5 * (pp[j+1]**RKAPPA_loc + pp[j]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                    zp600m = zpm + 600.0 * RG_loc * zpm / (RD_loc * ztm)
+                    jj = j
+                    while jj <= ilevm2 and zpm <= zp600m:
+                        zpm = (0.5 * (pp[jj+2]**RKAPPA_loc + pp[jj+1]**RKAPPA_loc))**(1.0 / RKAPPA_loc)
+                        jj += 1
+                    if jj < kflev and pq[jj] > 5.0e-6:
+                        kltrop = j
+        elif pp[j] > 5.0e4 and kltrop == ilevm2:
+            kltrop = j - 1
+
+    return kltrop
+
+# =========================
+# Find stability tropopause using ECMWF troplev function (type 1)
+# =========================
+def find_stability_tropopause_ecmwf(temp_zm_tm, q_zm_tm, pp_pa):
     """
-    Optimized vectorized stability tropopause detection
+    Find stability tropopause using ECMWF troplev function for all latitudes (type 1)
     """
     nlev, nlat = temp_zm_tm.shape
     
@@ -41,38 +97,33 @@ def find_tropopause_stability(temp_zm_tm, pp_pa):
     sort_idx = np.argsort(pp_pa)
     pp_tb = pp_pa[sort_idx]
     temp_tb = temp_zm_tm[sort_idx, :]
+    q_tb = q_zm_tm[sort_idx, :]
     
     # Initialize results
     tropopause_pressures = np.full(nlat, np.nan)
     
-    # Find valid pressure range (70-500 hPa)
-    valid_p_mask = (pp_tb >= 7000) & (pp_tb <= 50000)
-    valid_indices = np.where(valid_p_mask)[0]
-    
-    # Precompute pressure differences
-    pp_diff = np.zeros_like(pp_tb)
-    pp_diff[1:-1] = pp_tb[2:] - pp_tb[:-2]
-    
-    for j in valid_indices:
-        if j < 1 or j > nlev-2:
-            continue
-            
-        # Vectorized stability calculation
-        dT_dp = (temp_tb[j+1, :] - temp_tb[j-1, :]) / pp_diff[j]
-        stability_criterion = (pp_tb[j] / temp_tb[j, :]) * dT_dp + (RD * temp_tb[j, :] / (GRAVITY*GRAVITY)) * 2.5e-4
+    # Process each latitude
+    for lat_idx in range(nlat):
+        # Get temperature and humidity profiles for this latitude
+        pt_profile = temp_tb[:, lat_idx]
+        pq_profile = q_tb[:, lat_idx]
+        pp_profile = pp_tb
         
-        # Update where criterion is met and not already set
-        mask = (stability_criterion >= RD/CP) & np.isnan(tropopause_pressures)
-        tropopause_pressures[mask] = pp_tb[j]
+        # Find tropopause level using ECMWF algorithm (type 1 for stability)
+        kltrop = troplev(nlev, 1, pt_profile, pq_profile, pp_profile)
+        
+        # Check if valid tropopause was found
+        if kltrop < nlev - 2:  # Valid tropopause found
+            tropopause_pressures[lat_idx] = pp_profile[kltrop]
     
     return tropopause_pressures
 
 # =========================
-# Corrected thermal tropopause detection
+# Thermal tropopause detection (WMO criterion)
 # =========================
 def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
     """
-    Corrected thermal tropopause detection with proper lapse rate calculation
+    Thermal tropopause detection with WMO lapse rate criterion
     """
     nlev, nlat = temp_zm_tm.shape
     pTropopauseWMO = np.full(nlat, np.nan)
@@ -81,9 +132,7 @@ def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
     valid_levels = pp_pa <= 50000
     valid_indices = np.where(valid_levels)[0]
     
-    # Calculate lapse rates correctly
-    # Lapse rate = -dT/dz (temperature decrease with height)
-    # We need to calculate between adjacent levels
+    # Calculate lapse rates
     lapse_rates = np.full_like(temp_zm_tm, np.nan)
     
     for j in range(nlev - 1):
@@ -94,10 +143,9 @@ def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
         valid_dz = dz != 0
         lapse_rates[j, valid_dz] = -dT[valid_dz] / dz[valid_dz]  # K/km
         
-        # Debug: Check for unrealistic values
+        # Reset unrealistic values
         unrealistic = np.where((lapse_rates[j, :] < -20) | (lapse_rates[j, :] > 20))[0]
         if len(unrealistic) > 0:
-            # Reset unrealistic values
             lapse_rates[j, unrealistic] = np.nan
     
     # Check for lapse rate <= 2.0 K/km (WMO criterion)
@@ -129,55 +177,22 @@ def find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa):
                 valid_lapse_rates = []
                 for k in levels_in_range:
                     if k < nlev - 1 and not np.isnan(lapse_rates[k, lat_idx]):
-                        # Only include physically realistic lapse rates
                         if -20 < lapse_rates[k, lat_idx] < 20:
                             valid_lapse_rates.append(lapse_rates[k, lat_idx])
                 
                 if len(valid_lapse_rates) > 0:
                     avg_lapse = np.mean(valid_lapse_rates)
                     
-                    # Only accept physically realistic average lapse rates
                     if -10 < avg_lapse <= 2.0:
                         pTropopauseWMO[lat_idx] = pp_pa[j]
-                        print(f"Thermal tropopause found at lat {lat_idx}: {pp_pa[j]/100:.1f} hPa, avg lapse: {avg_lapse:.2f} K/km")
     
-    # Debug: Count how many latitudes have valid tropopause
     valid_count = np.sum(~np.isnan(pTropopauseWMO))
     print(f"Thermal tropopause found at {valid_count} of {nlat} latitudes")
     
     return pTropopauseWMO
 
 # =========================
-# Corrected geopotential height calculation
-# =========================
-def calculate_geopotential_height_corrected(temp_zm_tm, pp_pa):
-    """
-    Corrected geopotential height calculation
-    """
-    nlev, nlat = temp_zm_tm.shape
-    z_height = np.zeros((nlev, nlat))
-    
-    # Start from the top level (lowest pressure)
-    # Use the hypsometric equation: z2 - z1 = (R * T_avg / g) * ln(p1/p2)
-    
-    # For the top level, use a reasonable estimate
-    z_height[0, :] = 0  # Start at 0 km for the top level
-    
-    # Integrate downward
-    for i in range(1, nlev):
-        # Average temperature between levels
-        T_avg = (temp_zm_tm[i-1, :] + temp_zm_tm[i, :]) / 2
-        
-        # Height difference using hypsometric equation
-        dz = (RD * T_avg / g) * np.log(pp_pa[i-1] / pp_pa[i])
-        
-        # Convert to km and accumulate
-        z_height[i, :] = z_height[i-1, :] + dz / 1000
-    
-    return z_height
-
-# =========================
-# Optimized geopotential height calculation
+# Geopotential height calculation for thermal tropopause
 # =========================
 def calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa):
     """
@@ -206,23 +221,20 @@ def calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa):
 # =========================
 def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_size=30):
     """
-    Optimized variable processing with larger chunks for better performance
+    Optimized variable processing
     """
-    # Check which dimension name exists in the file
     if 'valid_time' in dataset.dimensions:
         ntime = dataset.dimensions['valid_time'].size
     elif 'time' in dataset.dimensions:
         ntime = dataset.dimensions['time'].size
     else:
-        raise ValueError("No time dimension found in the dataset")
+        raise ValueError("No time dimension found")
         
     nlat = dataset.dimensions['latitude'].size
     nlev = dataset.dimensions['pressure_level'].size
     
-    # Initialize array for zonal mean
     var_zm_tm = np.zeros((nlev, nlat), dtype=np.float32)
     
-    # Process data in time and latitude chunks
     for time_i in range(0, ntime, time_chunk_size):
         time_end = min(time_i + time_chunk_size, ntime)
         
@@ -230,16 +242,10 @@ def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_s
             lat_end = min(lat_i + lat_chunk_size, nlat)
             
             try:
-                # Read chunk of data
                 var_chunk = dataset.variables[var_name][time_i:time_end, :, lat_i:lat_end, :]
-                
-                # Calculate zonal mean for this chunk
                 var_zm_chunk = np.mean(var_chunk, axis=(0, 3))
-                
-                # Accumulate results with proper weighting
                 chunk_weight = (time_end - time_i) / ntime
                 var_zm_tm[:, lat_i:lat_end] += var_zm_chunk * chunk_weight
-                
             except Exception as e:
                 print(f"Error processing {var_name}: {e}")
                 continue
@@ -247,7 +253,7 @@ def process_variable_optimized(dataset, var_name, time_chunk_size=5, lat_chunk_s
     return var_zm_tm
 
 # =========================
-# Main - OPTIMIZED
+# Main
 # =========================
 if __name__ == "__main__":
     start_time = time.time()
@@ -260,18 +266,14 @@ if __name__ == "__main__":
             plev_hpa = f.variables["pressure_level"][:]
             pp_pa = plev_hpa * 100.0
             
-            print("Reading and processing data with optimized chunks...")
+            print("Reading and processing data...")
             
-            # Process variables with optimized chunk sizes
+            # Process variables
             print("Processing u variable...")
             u_zm_tm = process_variable_optimized(f, "u", time_chunk_size=5, lat_chunk_size=30)
             
             print("Processing t variable...")
             temp_zm_tm = process_variable_optimized(f, "t", time_chunk_size=5, lat_chunk_size=30)
-            
-            # Skip PV processing since we don't need it
-            print("Skipping pv variable...")
-            pv_zm_tm = np.zeros_like(u_zm_tm)
             
             print("Processing q variable...")
             try:
@@ -286,21 +288,20 @@ if __name__ == "__main__":
             print("Calculating geopotential height...")
             z_height = calculate_geopotential_height_vectorized(temp_zm_tm, pp_pa)
             
-            print("Calculating tropopause using different methods...")
+            print("Calculating tropopause...")
             
-            # Calculate stability tropopause
-            pStability = find_tropopause_stability(temp_zm_tm, pp_pa)
+            # Calculate stability tropopause using ECMWF (type 1)
+            pStability = find_stability_tropopause_ecmwf(temp_zm_tm, q_zm_tm, pp_pa)
             stability_valid = np.sum(~np.isnan(pStability))
-            print(f"Stability tropopause found at {stability_valid} of {ny_len} latitudes")
+            print(f"Stability tropopause (ECMWF type 1) found at {stability_valid} of {ny_len} latitudes")
             
-            # Calculate thermal tropopause with corrected algorithm
-            print("Calculating thermal tropopause with corrected algorithm...")
+            # Calculate thermal tropopause using WMO method
             pThermal = find_thermal_tropopause_corrected(temp_zm_tm, z_height, pp_pa)
             
             # Prepare for plotting
-            paxis = np.log10(pp_pa / 100)  # log10 of pressure in hPa
-            ptop = 0.8  # log10(10 hPa)
-            pbot = 3.0  # log10(1000 hPa)
+            paxis = np.log10(pp_pa / 100)
+            ptop = 0.8
+            pbot = 3.0
             
             print("Creating plot...")
             
@@ -310,9 +311,9 @@ if __name__ == "__main__":
             
             # Create legend
             legend_elements = [
-                Line2D([0], [0], marker='s', color='green', lw=0, label='Stability Tropopause',
+                Line2D([0], [0], marker='s', color='green', lw=0, label='Stability Tropopause (ECMWF)',
                        markersize=8, markeredgewidth=2),
-                Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause',
+                Line2D([0], [0], marker='o', color='red', lw=0, label='Thermal Tropopause (WMO)',
                        markersize=8, markeredgewidth=2)
             ]
             plt.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.8, facecolor='white')
@@ -324,12 +325,24 @@ if __name__ == "__main__":
                              linestyles='solid', colors='black')
             plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
             
+            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=1, levels=[-70,-65,-55,-50,-45,-35,-30,-25,-15,-10,-5], 
+                             linestyles='dashed', colors='black')
+            CS = plt.contour(lat, paxis, u_zm_tm, linewidths=2, levels=[-60,-40,-20], 
+                             linestyles='dashed', colors='black')
+            plt.clabel(CS, fontsize=12, inline=1, fmt='%1.0f')
+            
             # Plot temperature contours
             temp_c = temp_zm_tm - 273.16
             CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[10,20,30,40], 
                              linestyles='solid', colors='red')
             CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[0], 
                              linestyles='dashed', colors='c')
+            plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
+            
+            CS = plt.contour(lat, paxis, temp_c, linewidths=1, levels=[-70,-50,-40,-30,-20,-10], 
+                             linestyles='solid', colors='blue')
+            CS = plt.contour(lat, paxis, temp_c, linewidths=3, levels=[-80,-60], 
+                             linestyles='solid', colors='blue')
             plt.clabel(CS, fontsize=14, inline=1, fmt='%1.0f')
             
             # Fill temperature regions
@@ -341,14 +354,13 @@ if __name__ == "__main__":
             # Plot all tropopause types
             valid_lat_mask = np.abs(lat) < 88.0
             
-            # Stability tropopause
+            # Stability tropopause (ECMWF)
             stab_mask = valid_lat_mask & ~np.isnan(pStability)
             plt.plot(lat[stab_mask], np.log10(pStability[stab_mask]/100), "s", 
                      markersize=6, color='green', alpha=0.8)
             
-            # Thermal tropopause - THIS IS THE LINE WITH THE MASK
+            # Thermal tropopause (WMO)
             thermal_mask = valid_lat_mask & ~np.isnan(pThermal)
-            print(f"Plotting thermal tropopause at {np.sum(thermal_mask)} latitudes")
             plt.plot(lat[thermal_mask], np.log10(pThermal[thermal_mask]/100), "o", 
                      markersize=6, color='red', alpha=0.8)
             
@@ -377,7 +389,7 @@ if __name__ == "__main__":
             
             # Title and labels
             plt.title('Monthly/zonal-mean zonal wind (m/s), temperature (C)\n'
-                      'Stability (green), Thermal (red)', 
+                      'Stability (ECMWF, green), Thermal (WMO, red)', 
                       fontsize=10)
             
             plt.text(80, 3.20, "ERA5", fontsize=8)
@@ -387,7 +399,7 @@ if __name__ == "__main__":
             plt.text(lat[-1]-20, 2.3, 'pressure (hPa)', rotation=90, va='center', fontsize=16)
             
             # Save and show
-            outfile = os.path.join(direcOutput, "tropopause_stability_thermal_comparison_optimized.png")
+            outfile = os.path.join(direcOutput, "tropopause_stability_thermal_comparison.png")
             plt.savefig(outfile, dpi=300, bbox_inches='tight')
             plt.show()
             plt.close()
