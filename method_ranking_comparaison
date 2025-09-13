@@ -111,17 +111,19 @@ class WV_TropopauseComparator:
             if method_img.ndim == 3 and method_img.shape[-1] == 4:
                 method_img = method_img[:, :, :3]
 
-            # Convert to grayscale
-            if wv_img.ndim == 3:
-                wv_img = color.rgb2gray(wv_img)
+            # Keep WV in color, convert method to grayscale
             if method_img.ndim == 3:
                 method_img = color.rgb2gray(method_img)
 
             # Resize method to WV shape
-            method_img = transform.resize(method_img, wv_img.shape, anti_aliasing=True)
+            method_img = transform.resize(method_img, wv_img.shape[:2], anti_aliasing=True)
 
-            # Normalize 0–1
-            wv_img = (wv_img - np.min(wv_img)) / (np.max(wv_img) - np.min(wv_img))
+            # Normalize 0-1
+            if wv_img.ndim == 3:  # Color image
+                wv_img = (wv_img - np.min(wv_img)) / (np.max(wv_img) - np.min(wv_img))
+            else:  # Grayscale
+                wv_img = (wv_img - np.min(wv_img)) / (np.max(wv_img) - np.min(wv_img))
+                
             method_img = (method_img - np.min(method_img)) / (np.max(method_img) - np.min(method_img))
 
             return wv_img, method_img
@@ -136,17 +138,23 @@ class WV_TropopauseComparator:
             if img1 is None or img2 is None:
                 raise ValueError("One or both images are None")
                 
+            # Convert WV image to grayscale for metric calculation if it's color
+            if img1.ndim == 3:
+                img1_gray = color.rgb2gray(img1)
+            else:
+                img1_gray = img1
+                
             # Check if images are constant (which would cause correlation issues)
-            if np.std(img1) == 0 or np.std(img2) == 0:
+            if np.std(img1_gray) == 0 or np.std(img2) == 0:
                 metrics_dict['ssim'] = 0.0
                 metrics_dict['mse'] = 1.0
                 metrics_dict['ncc'] = 0.0
             else:
-                metrics_dict['ssim'] = float(metrics.structural_similarity(img1, img2, data_range=1.0))
-                metrics_dict['mse'] = float(metrics.mean_squared_error(img1, img2))
+                metrics_dict['ssim'] = float(metrics.structural_similarity(img1_gray, img2, data_range=1.0))
+                metrics_dict['mse'] = float(metrics.mean_squared_error(img1_gray, img2))
                 
                 # Calculate NCC safely
-                corr_matrix = np.corrcoef(img1.flatten(), img2.flatten())
+                corr_matrix = np.corrcoef(img1_gray.flatten(), img2.flatten())
                 if np.isnan(corr_matrix[0, 1]):
                     metrics_dict['ncc'] = 0.0
                 else:
@@ -161,51 +169,77 @@ class WV_TropopauseComparator:
         return metrics_dict
 
     def create_comparison_figure(self, wv_img, method_imgs, method_names, metrics_list, timestamp):
+        # Create two separate figures instead of one combined figure
+
+        # Figure 1: Only WV image with colorbar - USING VIRIDIS COLORMAP LIKE METHODS
+        fig1, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+    
+        # Convert WV image to grayscale for display with viridis colormap
+        if wv_img.ndim == 3:
+            wv_display = color.rgb2gray(wv_img)
+        else:
+            wv_display = wv_img
+    
+        # Use the same viridis colormap as the method images
+        im_wv = ax1.imshow(wv_display, cmap='viridis')
+        
+        ax1.axis('off')
+
+        # Add colorbar for WV image
+        cbar_ax_wv = fig1.add_axes([0.92, 0.15, 0.03, 0.7])
+        cbar_wv = fig1.colorbar(im_wv, cax=cbar_ax_wv)
+        cbar_wv.set_label("WV Intensity", fontsize=12)
+
+        plt.tight_layout(rect=[0, 0, 0.9, 1])
+        fig1.savefig(os.path.join(self.output_dir, f'wv_only_{timestamp}.png'), dpi=150, bbox_inches='tight')
+        plt.close(fig1)
+
+        # Figure 2: All methods and their differences
         n_methods = len(method_names)
-        fig, axes = plt.subplots(2, n_methods + 1, figsize=(20, 10))
 
-        # WV reference
-        axes[0, 0].imshow(wv_img, cmap='viridis')
-        axes[0, 0].set_title('Water Vapor 6.2μm\n' + timestamp, fontsize=12)
-        axes[0, 0].axis('off')
+        # Create a grid with 2 rows (methods and differences) and n_methods columns
+        fig2, axes = plt.subplots(2, n_methods, figsize=(5*n_methods, 8))
 
-        # Loop over methods
-        for i, (method_img, method_name, metrics) in enumerate(zip(method_imgs, method_names, metrics_list), 1):
-            if method_img.shape != wv_img.shape:
-                method_img = transform.resize(method_img, wv_img.shape, anti_aliasing=True)
+        # If there's only one method, ensure axes is 2D
+        if n_methods == 1:
+            axes = axes.reshape(2, 1)
 
-            axes[0, i].imshow(method_img, cmap='viridis')
-            axes[0, i].set_title(f'{method_name}\nSSIM: {metrics["ssim"]:.3f}', fontsize=12)
+        # Loop over methods - first row for method images
+        for i, (method_img, method_name, metrics) in enumerate(zip(method_imgs, method_names, metrics_list)):
+            if method_img.shape != wv_img.shape[:2]:
+                method_img = transform.resize(method_img, wv_img.shape[:2], anti_aliasing=True)
+
+            # Method image
+            im_method = axes[0, i].imshow(method_img, cmap='viridis')
+            axes[0, i].set_title(f'{method_name}\nSSIM: {metrics["ssim"]:.3f}', fontsize=12, fontweight='bold')
             axes[0, i].axis('off')
 
-            diff = np.abs(wv_img - method_img)
-            im = axes[1, i].imshow(diff, cmap='hot', vmin=0, vmax=1)
-            axes[1, i].set_title(f'Difference\nMSE: {metrics["mse"]:.3f}', fontsize=12)
+            # Convert WV to grayscale for difference calculation if it's color
+            if wv_img.ndim == 3:
+                wv_gray = color.rgb2gray(wv_img)
+            else:
+                wv_gray = wv_img
+        
+            #Difference image - second row
+            diff = np.abs(wv_gray - method_img)
+            im_diff = axes[1, i].imshow(diff, cmap='hot', vmin=0, vmax=1)
+            axes[1, i].set_title(f'Difference\nMSE: {metrics["mse"]:.3f}', fontsize=12, fontweight='bold')
             axes[1, i].axis('off')
 
-        # Horizontal colorbar
-        cbar_ax = fig.add_axes([0.25, 0.05, 0.5, 0.03])
-        cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
-        cbar.set_label("Difference (0 to 1)", fontsize=10)
+        # Add only one colorbar for all method images (top row)
+        cbar_ax_method = fig2.add_axes([0.25, 0.92, 0.5, 0.02])
+        fig2.colorbar(im_method, cax=cbar_ax_method, orientation='horizontal')
+        cbar_ax_method.set_title("Method Intensity", fontsize=10)
+        cbar_ax_method.xaxis.set_ticks_position('top')
+        cbar_ax_method.xaxis.set_label_position('top')
 
-        # Metrics table
-        table_data = []
-        for metrics in metrics_list:
-            table_data.append([f"{metrics['ssim']:.3f}", f"{metrics['mse']:.3f}", f"{metrics['ncc']:.3f}"])
+        # Add only one colorbar for all difference images (bottom row)
+        cbar_ax_diff = fig2.add_axes([0.25, 0.04, 0.5, 0.02])
+        fig2.colorbar(im_diff, cax=cbar_ax_diff, orientation='horizontal')
+        cbar_ax_diff.set_title("Difference Intensity", fontsize=10)
 
-        axes[1, 0].axis('off')
-        table = axes[1, 0].table(cellText=table_data,
-                                rowLabels=method_names,
-                                colLabels=['SSIM', 'MSE', 'NCC'],
-                                loc='center')
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 2)
-        axes[1, 0].set_title('Similarity Metrics', fontsize=12)
-
-        plt.tight_layout(rect=[0, 0.08, 1, 1])
-        return fig
-
+    
+        return fig2
     def process_all_images(self):
         # First, debug all method directories to see what files are available
         print("\nDebugging method directories:")
