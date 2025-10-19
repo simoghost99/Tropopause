@@ -95,62 +95,64 @@ These visualizations allow a **side-by-side comparison** of classical and new me
 
 ## References
 
- [1] ECMWF. (2024). Reintroducing analysis humidity in the stratosphere. Retrieved
- from
- https://www.ecmwf.int/en/newsletter/183/earth-system-science/
- reintroducing-analysis-humidity-stratosphere
- [2] ECMWF. (2024). IFS Documentation- Cy49r1, Part IV: Physical
- Processes.
- Operational
- from
- implementation
- 12
- November
- 2024.
- Retrieved
- https://www.ecmwf.int/sites/default/files/elibrary/112024/
- 81626-ifs-documentation-cy49r1-part-iv-physical-processes.pdf
- [3] Elmer, N. J., Berndt, E., Jedlovec, G., & Fuell, K. (2019). Limb Correction of Geosta
-tionary Infrared Imagery in Clear and Cloudy Regions to Improve Interpretation of RGB
- Composites for Real-Time Applications. Journal of Atmospheric and Oceanic Technology,
- 36(8), 1675-1690. DOI: https://doi.org/10.1175/JTECH-D-18-0206.1
- [4] Hoskins, B. J., McIntyre, M. E., & Robertson, A. W. (1985). On the use and significance
- of isentropic potential vorticity maps. Quarterly Journal of the Royal Meteorological
- Society, 111(470), 877-946. DOI: https://doi.org/10.1002/qj.49711147002
- [5] ECMWF. (2024). ERA5: Fifth generation of ECMWF atmospheric reanalyses of
- the global climate. Retrieved from https://www.ecmwf.int/en/forecasts/datasets/
- reanalysis-datasets/era5
- [6] European Centre for Medium-Range Weather Forecasts (ECMWF). (2024). Official web
-site. Retrieved from https://www.ecmwf.int
- [7] Santer, B. D., Wehner, M. F., Wigley, T. M. L., Sausen, R., Meehl, G. A., Taylor,
- K. E., ...& Branson, M. (2004). Contributions of anthropogenic and natural forcing to
- recent tropopause height changes. Science, 301(5632), 479-483. DOI: https://doi.org/
- 10.1126/science.1084123
- [8] World Meteorological Organization (WMO). (1957). Definition of the tropopause. WMO
- Bulletin, 6(4), 136-137.
- 39
-Tropopause Detection and Analysis
- DGM &ECMWF&EHTP
- [9] Hoinka, K. P. (1998). Statistics of the global tropopause pressure. Monthly Weather
- Review, 126(12), 3303-3325. DOI: https://doi.org/10.1175/1520-0493(1998)
- 126<3303:SOTGTP>2.0.CO;2
- [10] ECMWF. (2023). Hybrid tropopause detection methods in the IFS. ECMWF Technical
- Memorandum No. 987.
- [11] Wang, Z., Bovik, A. C., Sheikh, H. R., & Simoncelli, E. P. (2004). Image quality as
-sessment: From error visibility to structural similarity. IEEE Transactions on Image
- Processing, 13(4), 600-612. DOI: https://doi.org/10.1109/TIP.2003.819861
- [12] Gonzalez, R. C., & Woods, R. E. (2018). Digital Image Processing (4th ed.). Pearson
- Education. Chapter 5: Image Restoration and Reconstruction.
- [13] Lewis, J. P. (1995). Fast normalized cross-correlation. Vision Interface, 10(1), 120-123.
- [14] Hore, A., & Ziou, D. (2010). Image quality metrics: PSNR vs. SSIM. In 2010 20th
- International Conference on Pattern Recognition (pp. 2366-2369). IEEE. DOI: https:
- //doi.org/10.1109/ICPR.2010.579
- [15] Theodoridis, S., & Koutroumbas, K. (2008). Pattern Recognition (4th ed.). Academic
- Press. Chapter 7: Feature Generation II.
- [16] Szeliski, R. (2010). Computer Vision: Algorithms and Applications. Springer Science &
- Business Media. Chapter 8: Dense motion estimation.
- [17] Oppenheim, A. V., & Schafer, R. W. (2009). Discrete-Time Signal Processing (3rd ed.).
- Pearson Education. Chapter 7: Filter Design Techniques.
+ECMWF. (2024). Reintroducing analysis humidity in the stratosphere.
+Retrieved from https://www.ecmwf.int/en/newsletter/183/earth-system-science/reintroducing-analysis-humidity-stratosphere
+
+ECMWF. (2024). IFS Documentation - Cy49r1, Part IV: Physical Processes.
+Operational implementation from 12 November 2024.
+Retrieved from https://www.ecmwf.int/sites/default/files/elibrary/112024/81626-ifs-documentation-cy49r1-part-iv-physical-processes.pdf
+
+Elmer, N. J., Berndt, E., Jedlovec, G., & Fuell, K. (2019). Limb Correction of Geostationary Infrared Imagery in Clear and Cloudy Regions to Improve Interpretation of RGB Composites for Real-Time Applications.
+Journal of Atmospheric and Oceanic Technology, 36(8), 1675–1690.
+https://doi.org/10.1175/JTECH-D-18-0206.1
+
+Hoskins, B. J., McIntyre, M. E., & Robertson, A. W. (1985). On the use and significance of isentropic potential vorticity maps.
+Quarterly Journal of the Royal Meteorological Society, 111(470), 877–946.
+https://doi.org/10.1002/qj.49711147002
+
+ECMWF. (2024). ERA5: Fifth generation of ECMWF atmospheric reanalyses of the global climate.
+Retrieved from https://www.ecmwf.int/en/forecasts/datasets/reanalysis-datasets/era5
+
+European Centre for Medium-Range Weather Forecasts (ECMWF). (2024). Official website.
+Retrieved from https://www.ecmwf.int
+
+Santer, B. D., Wehner, M. F., Wigley, T. M. L., Sausen, R., Meehl, G. A., Taylor, K. E., ... & Branson, M. (2004). Contributions of anthropogenic and natural forcing to recent tropopause height changes.
+Science, 301(5632), 479–483.
+https://doi.org/10.1126/science.1084123
+
+World Meteorological Organization (WMO). (1957). Definition of the tropopause.
+WMO Bulletin, 6(4), 136–137.
+
+Hoinka, K. P. (1998). Statistics of the global tropopause pressure.
+Monthly Weather Review, 126(12), 3303–3325.
+https://doi.org/10.1175/1520-0493(1998)126<3303:SOTGTP>2.0.CO;2
+
+ECMWF. (2023). Hybrid tropopause detection methods in the IFS.
+ECMWF Technical Memorandum No. 987.
+
+Wang, Z., Bovik, A. C., Sheikh, H. R., & Simoncelli, E. P. (2004). Image quality assessment: From error visibility to structural similarity.
+IEEE Transactions on Image Processing, 13(4), 600–612.
+https://doi.org/10.1109/TIP.2003.819861
+
+Gonzalez, R. C., & Woods, R. E. (2018). Digital Image Processing (4th ed.). Pearson Education.
+Chapter 5: Image Restoration and Reconstruction.
+
+Lewis, J. P. (1995). Fast normalized cross-correlation.
+Vision Interface, 10(1), 120–123.
+
+Hore, A., & Ziou, D. (2010). Image quality metrics: PSNR vs. SSIM.
+In 2010 20th International Conference on Pattern Recognition (pp. 2366–2369). IEEE.
+https://doi.org/10.1109/ICPR.2010.579
+
+Theodoridis, S., & Koutroumbas, K. (2008). Pattern Recognition (4th ed.). Academic Press.
+Chapter 7: Feature Generation II.
+
+Szeliski, R. (2010). Computer Vision: Algorithms and Applications. Springer Science & Business Media.
+Chapter 8: Dense Motion Estimation.
+
+Oppenheim, A. V., & Schafer, R. W. (2009). Discrete-Time Signal Processing (3rd ed.). Pearson Education.
+Chapter 7: Filter Design Techniques.
+
 ---
 
 ## Contact
